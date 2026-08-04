@@ -28,11 +28,12 @@
 | `ANTHROPIC_API_KEY` | Claude API 인증 키 | https://console.anthropic.com/settings/keys | `sk-ant-...` | Anthropic 공식 SDK가 이 이름을 기본으로 자동 인식함 |
 | `OPENAI_API_KEY` | OpenAI API 인증 키 | https://platform.openai.com/api-keys | `sk-...` | OpenAI 공식 SDK가 이 이름을 기본으로 자동 인식함 |
 | `TELEGRAM_BOT_TOKEN` | Telegram 봇 API 토큰 | Telegram에서 [@BotFather](https://t.me/BotFather)와 대화해 봇 생성 후 발급 | `123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` | 콜론(`:`) 앞은 봇 ID, 뒤는 인증 해시 |
+| `TELEGRAM_CHAT_ID` | 봇이 메시지를 보낼 대상 chat_id (기본적으로 본인 개인 채팅) | 봇에게 메시지를 한 번 보낸 뒤 `https://api.telegram.org/bot<TOKEN>/getUpdates` 응답의 `result[0].message.chat.id` 확인, 또는 [@userinfobot](https://t.me/userinfobot)과 대화해 본인 id 확인 | `123456789` (양수는 개인, 음수는 그룹/채널) | 여러 스킬이 같은 본인 채팅으로 알림을 보낼 경우 공용으로 재사용 |
 | `SLACK_TOKEN` | Slack App-Level Token | https://api.slack.com/apps → 앱 선택 → Basic Information → App-Level Tokens | `xapp-...` | Socket Mode 등 앱 단위 이벤트 구독에 사용 |
 | `SLACK_BOT_USER_TOKEN` | Slack Bot User OAuth Token | https://api.slack.com/apps → 앱 선택 → OAuth & Permissions → Bot User OAuth Token | `xoxb-...` | 메시지 전송 등 봇으로 API를 호출할 때 사용 (Web API 호출은 대부분 이 토큰 사용) |
 
 > 새 공용 변수가 필요하면 이 표에 행을 추가하고, `.env.example`에도 같은 이름으로
-> 플레이스홀더를 추가합니다. 특정 스킬 하나에서만 쓰는 값(예: 특정 채널의 `TELEGRAM_CHAT_ID`)은
+> 플레이스홀더를 추가합니다. 특정 스킬 하나에서만 쓰는 값(예: 특정 스킬 전용 API Key)은
 > 이 표 대신 해당 스킬의 `docs/PRD.md`(또는 `SRS.md`)와 `README.md`에 기록합니다.
 
 ## 원칙

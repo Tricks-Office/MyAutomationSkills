@@ -5,6 +5,10 @@
 **/*.key
 **/*.pem
 
+# 스킬이 실행 중 생성하는 데이터 (data/ 폴더 구조 자체는 유지)
+data/*.db
+data/*.sqlite3
+
 # Python
 __pycache__/
 *.pyc

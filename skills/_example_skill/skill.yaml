@@ -1,0 +1,6 @@
+name: _example_skill
+description: 신규 스킬 골격을 보여주는 예시 (실제 Hermes에 등록하지 않음)
+entrypoint: src/main.py
+trigger_keywords: []
+requirements: requirements.txt
+version: 0.1.0

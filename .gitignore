@@ -1,0 +1,21 @@
+# 환경/비밀정보
+.env
+*.env
+**/secrets/
+**/*.key
+**/*.pem
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# OS
+.DS_Store
+
+# 에디터
+.vscode/
+.idea/

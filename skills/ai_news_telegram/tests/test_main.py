@@ -206,3 +206,59 @@ def test_hn_story_from_hit_falls_back_to_discussion_url():
 
 def test_hn_story_from_hit_returns_none_without_object_id():
     assert main._hn_story_from_hit({"title": "no id"}) is None
+
+
+def _make_story(title: str = "", text: str = "", points: int = 0, num_comments: int = 0) -> main.HNStory:
+    return main.HNStory(
+        item_id="1",
+        title=title,
+        url="https://example.com",
+        text=text,
+        points=points,
+        num_comments=num_comments,
+        created_at_i=0,
+    )
+
+
+def test_filter_ai_related_keeps_matching_and_drops_unrelated():
+    ai_story = _make_story(title="New LLM benchmark released")
+    unrelated_story = _make_story(title="Thanks FedEx, this is why we keep getting phished")
+
+    filtered = main.filter_ai_related([ai_story, unrelated_story])
+
+    assert filtered == [ai_story]
+
+
+def test_filter_ai_related_matches_plural_and_possessive_forms():
+    plural_story = _make_story(title="Dev proves LLMs will run on anything")
+    possessive_story = _make_story(title="OpenAI's new release")
+
+    filtered = main.filter_ai_related([plural_story, possessive_story])
+
+    assert plural_story in filtered
+    assert possessive_story in filtered
+
+
+def test_filter_ai_related_checks_story_text_too():
+    story = _make_story(title="Show HN: my project", text="Built with a custom neural network")
+    assert main.filter_ai_related([story]) == [story]
+
+
+def test_classify_category_defaults_to_tech_on_tie():
+    assert main.classify_category(_make_story(title="Just an AI story with no other signal")) == "tech"
+
+
+def test_classify_category_detects_business_signal():
+    story = _make_story(title="AI startup raises new funding round")
+    assert main.classify_category(story) == "biz"
+
+
+def test_classify_category_detects_tech_signal():
+    story = _make_story(title="New open source model benchmark and research paper")
+    assert main.classify_category(story) == "tech"
+
+
+def test_classify_category_breaks_tie_toward_tech_when_equal_counts():
+    # "model"(기술) 1개, "funding"(비즈니스) 1개로 동률 → 기술
+    story = _make_story(title="New model funding announced")
+    assert main.classify_category(story) == "tech"

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -41,6 +42,39 @@ AI_KEYWORDS = [
     "gemini",
     "deep learning",
     "neural network",
+]
+
+# SRS FR-5: 기술/비즈니스 카테고리 분류 키워드 (두 세트 모두 매칭되면 개수 비교, 동률이면 기술)
+TECH_KEYWORDS = [
+    "model",
+    "benchmark",
+    "open source",
+    "open-source",
+    "research",
+    "paper",
+    "algorithm",
+    "training",
+    "inference",
+    "dataset",
+    "architecture",
+]
+BIZ_KEYWORDS = [
+    "funding",
+    "raise",
+    "valuation",
+    "acquisition",
+    "acquire",
+    "ipo",
+    "revenue",
+    "enterprise",
+    "partnership",
+    "regulation",
+    "lawsuit",
+    "layoff",
+    "hiring",
+    "investment",
+    "investor",
+    "startup",
 ]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -135,6 +169,43 @@ def fetch_hn_stories(mode: str, now: int | None = None) -> list[HNStory]:
     stories = list(stories_by_id.values())
     logger.info("HN 검색 완료 (mode=%s): %d건(중복 제거 후)", mode, len(stories))
     return stories
+
+
+def _count_keyword_matches(text: str, keywords: list[str]) -> int:
+    """단어 경계 기준으로 매칭하되, 복수형/소유격(-s, -'s)은 같은 키워드로 취급한다.
+
+    엄격한 \\b{kw}\\b만 쓰면 "LLM"은 매칭되고 "LLMs"는 안 되는 등 복수형을 놓친다
+    (실제 HN 데이터로 검증 중 발견).
+    """
+    return sum(
+        1
+        for kw in keywords
+        if re.search(rf"\b{re.escape(kw)}(?:'s|s)?\b", text, re.IGNORECASE)
+    )
+
+
+def filter_ai_related(stories: list[HNStory]) -> list[HNStory]:
+    """SRS FR-4: title/story_text에 AI_KEYWORDS가 하나라도 있는 스토리만 남긴다.
+
+    fetch_hn_stories()의 키워드별 검색은 Algolia의 typo-tolerance/관련도 매칭으로
+    관련 없는 글이 섞여 들어올 수 있어(예: 오타 유사도로 매칭), 여기서 우리가 정한
+    키워드 목록으로 단어 경계 기준 재검증한다.
+    """
+    filtered = [
+        story
+        for story in stories
+        if _count_keyword_matches(f"{story.title} {story.text}", AI_KEYWORDS) > 0
+    ]
+    logger.info("AI 키워드 필터 통과: %d/%d건", len(filtered), len(stories))
+    return filtered
+
+
+def classify_category(story: HNStory) -> str:
+    """SRS FR-5: 기술/비즈니스 키워드 매칭 개수를 비교해 분류, 동률(0:0 포함)이면 기술."""
+    text = f"{story.title} {story.text}"
+    tech_count = _count_keyword_matches(text, TECH_KEYWORDS)
+    biz_count = _count_keyword_matches(text, BIZ_KEYWORDS)
+    return "tech" if tech_count >= biz_count else "biz"
 
 
 def send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:

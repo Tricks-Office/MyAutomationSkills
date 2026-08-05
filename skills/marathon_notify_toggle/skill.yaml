@@ -1,0 +1,6 @@
+name: marathon_notify_toggle
+description: data/marathon.db에 등록된 마라톤 대회의 텔레그램 알림(notify_telegram)을 해제하거나 재활성화
+entrypoint: src/main.py
+trigger_keywords: [마라톤 알림 해제, 마라톤 알림 끄기, 마라톤 알림 켜기, 마라톤 알림 다시 받기, 대회 제외, 대회 다시 포함]
+requirements: requirements.txt
+version: 0.1.0

@@ -100,11 +100,17 @@ def test_send_telegram_message_raises_when_api_reports_failure(monkeypatch):
         pass
 
 
-def test_run_returns_success_when_send_succeeds(monkeypatch, tmp_path):
+def _stub_run_env(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+
+
+def test_run_returns_success_when_send_succeeds(monkeypatch, tmp_path):
+    _stub_run_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "collect_candidate_pools", lambda mode: {"tech": [], "biz": []})
+    monkeypatch.setattr(main, "rank_and_summarize", lambda pools, api_key: {"tech": [], "biz": []})
 
     sent = {}
     monkeypatch.setattr(
@@ -115,14 +121,36 @@ def test_run_returns_success_when_send_succeeds(monkeypatch, tmp_path):
 
     assert main.run("daily") == 0
     assert sent["token"] == "test-token"
-    assert "daily" in sent["text"]
+    assert "발견된 소식이 없습니다" in sent["text"]
+
+
+def test_run_returns_failure_when_candidate_collection_fails(monkeypatch, tmp_path):
+    _stub_run_env(monkeypatch, tmp_path)
+
+    def _raise(mode):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(main, "collect_candidate_pools", _raise)
+
+    assert main.run("daily") == 1
+
+
+def test_run_returns_failure_when_ranking_fails(monkeypatch, tmp_path):
+    _stub_run_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "collect_candidate_pools", lambda mode: {"tech": [], "biz": []})
+
+    def _raise(pools, api_key):
+        raise main.RankingError("boom")
+
+    monkeypatch.setattr(main, "rank_and_summarize", _raise)
+
+    assert main.run("daily") == 1
 
 
 def test_run_returns_failure_when_send_fails(monkeypatch, tmp_path):
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
-    monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    _stub_run_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "collect_candidate_pools", lambda mode: {"tech": [], "biz": []})
+    monkeypatch.setattr(main, "rank_and_summarize", lambda pools, api_key: {"tech": [], "biz": []})
 
     def _raise(token, chat_id, text):
         raise RuntimeError("boom")
@@ -406,3 +434,36 @@ def test_rank_and_summarize_raises_when_no_text_block(monkeypatch):
         assert False, "RankingError가 발생해야 함"
     except main.RankingError:
         pass
+
+
+def _make_ranked_item(idx: int) -> dict:
+    return {
+        "item_id": str(idx),
+        "title_ko": f"제목 {idx}",
+        "summary_ko": f"요약 {idx}",
+        "url": f"https://example.com/{idx}",
+        "points": idx,
+        "num_comments": idx,
+    }
+
+
+def test_format_final_message_shows_zero_state_per_category():
+    message = main.format_final_message("daily", {"tech": [], "biz": []})
+    assert message.count("이번 기간 동안 발견된 소식이 없습니다.") == 2
+    assert "일간" in message
+
+
+def test_format_final_message_marks_shortage_under_five():
+    items = [_make_ranked_item(i) for i in range(3)]
+    message = main.format_final_message("weekly", {"tech": items, "biz": []})
+    assert "후보가 3건뿐입니다" in message
+    assert "주간" in message
+
+
+def test_format_final_message_lists_all_items_without_shortage_note():
+    items = [_make_ranked_item(i) for i in range(5)]
+    message = main.format_final_message("daily", {"tech": items, "biz": []})
+    assert "후보가" not in message
+    for item in items:
+        assert item["title_ko"] in message
+        assert item["url"] in message

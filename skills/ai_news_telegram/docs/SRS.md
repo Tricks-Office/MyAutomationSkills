@@ -115,6 +115,13 @@ Hacker News에서 AI 관련 스토리를 수집해 규칙 기반으로 "기술"/
   - 응답의 `hits[]` 항목에서 사용할 필드: `objectID`(발송 이력 dedup 키), `title`, `url`(Show HN/Ask HN
     등 자체 게시물은 없을 수 있음 — 없으면 `https://news.ycombinator.com/item?id={objectID}`로 대체),
     `story_text`(자체 게시물 본문, AI 키워드 매칭에 함께 사용), `points`, `num_comments`, `created_at_i`
+  - `query`에 여러 단어를 한 번에 넣으면 AND(모두 포함)로 동작해 AI_KEYWORDS를 한 번에 묶어
+    보낼 수 없다는 것도 실제 호출로 확인, 키워드별 개별 검색 후 objectID로 병합하는 방식을 채택함
+- **Claude 구조화 출력(FR-8) 검증 결과 (Phase 2에서 실제 호출로 검증 완료)**:
+  - `output_config.format.json_schema`에서 array 타입에 `maxItems`를 걸면 400 에러
+    (`property 'maxItems' is not supported`)가 발생해 스키마로는 "최대 5개" 제약을 걸 수 없다.
+    프롬프트로 지시했지만 실제로 6개를 반환한 사례가 있어, 응답을 받은 뒤 애플리케이션
+    코드에서 카테고리별 상위 5건으로 다시 자른다.
   - 인증 불필요, 별도 API 키 없음. rate limit 관련 에러 응답은 이번 확인 과정에서 발생하지 않음
     (daily/weekly 각 1회 호출이라 영향 적을 것으로 판단)
 

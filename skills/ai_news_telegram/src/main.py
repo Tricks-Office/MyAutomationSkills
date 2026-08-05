@@ -4,8 +4,8 @@ Hacker News에서 AI 관련 스토리를 수집해 규칙 기반으로 기술/�
 Claude API 1회 호출로 카테고리별 Top5 랭킹/한국어 요약을 생성해 텔레그램으로 발송한다.
 요구사항은 docs/PRD.md, docs/SRS.md, 구현 순서는 docs/IMPLEMENTATION_PLAN.md 참고.
 
-Phase 0(뼈대): 실제 HN 검색/분류/Claude 랭킹 로직은 아직 없다. `.env`/`--mode` 로딩과
-텔레그램 발송 함수의 end-to-end 배선만 하드코딩된 예시 메시지로 검증한다.
+발송 이력 기반 중복 방지(SRS FR-6/FR-11)와 세부 예외 처리는 아직 없다 (Implementation
+Plan Phase 3에서 구현 예정).
 """
 from __future__ import annotations
 
@@ -85,6 +85,7 @@ BIZ_KEYWORDS = [
 ]
 
 CATEGORY_LABELS = {"tech": "📌 AI 기술 Hot 5", "biz": "💼 AI 비즈니스 Hot 5"}
+MIN_EXPECTED_ITEMS = 5
 
 # SRS FR-8: Claude 응답 구조. item_id는 후보 목록의 값을 그대로 돌려받아야
 # 랭킹 결과를 원본 HNStory(url/points/comments)와 다시 연결할 수 있다.
@@ -346,9 +347,12 @@ def rank_and_summarize(pools: dict[str, list[HNStory]], api_key: str) -> dict[st
     except json.JSONDecodeError as exc:
         raise RankingError(f"Claude 응답 JSON 파싱 실패, 원본 응답: {raw_text}") from exc
 
+    # Claude structured output는 array에 maxItems를 지원하지 않아(400 에러) 스키마로
+    # 5개 제한을 강제할 수 없다. 프롬프트로 "최대 5개"를 지시했지만 실제로 6개를 반환한
+    # 사례를 확인해, 여기서 코드로 다시 한번 자른다 (SRS FR-8: 카테고리별 최종 Top5).
     ranked = {
-        "tech": _merge_ranked_items(pools.get("tech", []), payload.get("tech", [])),
-        "biz": _merge_ranked_items(pools.get("biz", []), payload.get("biz", [])),
+        "tech": _merge_ranked_items(pools.get("tech", []), payload.get("tech", []))[:MIN_EXPECTED_ITEMS],
+        "biz": _merge_ranked_items(pools.get("biz", []), payload.get("biz", []))[:MIN_EXPECTED_ITEMS],
     }
     logger.info(
         "Claude 랭킹/요약 완료: 기술 %d건, 비즈니스 %d건",
@@ -374,38 +378,73 @@ def send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:
             raise RuntimeError(f"텔레그램 발송 실패: {payload}")
 
 
-def build_placeholder_message(mode: str) -> str:
-    """Phase 0 전용: 실제 HN/Claude 연동 전, 배선 확인용 하드코딩 예시 메시지."""
-    return (
-        f"[ai_news_telegram Phase 0 테스트 발송 - mode={mode}]\n\n"
-        "📌 AI 기술 Hot 5 (예시)\n"
-        "1. (예시) 신규 오픈소스 LLM 벤치마크 결과 공개\n"
-        "   요약: 예시용 한줄 요약입니다.\n"
-        "   🔗 https://example.com/tech-1 | 👍 120 | 💬 45\n\n"
-        "💼 AI 비즈니스 Hot 5 (예시)\n"
-        "1. (예시) AI 스타트업 대규모 투자 유치\n"
-        "   요약: 예시용 한줄 요약입니다.\n"
-        "   🔗 https://example.com/biz-1 | 👍 98 | 💬 30\n\n"
-        "(실제 HN 검색/분류/Claude 랭킹 로직은 Phase 1~2에서 구현 예정)"
-    )
+def _format_category_section(category: str, items: list[dict]) -> str:
+    """SRS FR-9/FR-10: 카테고리 섹션을 구성하고, 후보 부족/0건 안내 문구를 붙인다."""
+    lines = [CATEGORY_LABELS[category]]
+
+    if not items:
+        lines.append("이번 기간 동안 발견된 소식이 없습니다.")
+        return "\n".join(lines)
+
+    if len(items) < MIN_EXPECTED_ITEMS:
+        lines.append(f"(이번 실행에서는 후보가 {len(items)}건뿐입니다)")
+
+    for idx, item in enumerate(items, start=1):
+        lines.append(
+            "\n".join(
+                [
+                    "",
+                    f"{idx}. {item['title_ko']}",
+                    f"   {item['summary_ko']}",
+                    f"   🔗 {item['url']} | 👍 {item['points']} | 💬 {item['num_comments']}",
+                ]
+            )
+        )
+    return "\n".join(lines)
+
+
+def format_final_message(mode: str, ranked: dict[str, list[dict]]) -> str:
+    """SRS FR-9: 기술/비즈니스 섹션을 포함한 최종 텔레그램 메시지를 구성한다."""
+    mode_label = "일간" if mode == "daily" else "주간"
+    sections = [
+        f"🤖 AI 뉴스 브리핑 ({mode_label})",
+        "",
+        _format_category_section("tech", ranked.get("tech", [])),
+        "",
+        _format_category_section("biz", ranked.get("biz", [])),
+    ]
+    return "\n".join(sections)
 
 
 def run(mode: str) -> int:
-    """Phase 0 처리 흐름: 설정 로드 → 하드코딩 메시지 발송. 성공 0, 완전 실패 시 0이 아닌 값."""
+    """SRS 6절 처리 흐름(발송 이력 DB 제외): 설정 로드 → 후보 수집 → Claude 랭킹/요약
+    → 포맷팅 → 발송. 성공 0, 완전 실패 시 0이 아닌 값."""
     try:
         config = load_config()
     except RequiredEnvMissingError:
         logger.exception("환경변수 검증 실패, 실행을 시작하지 않음")
         return 1
 
-    message = build_placeholder_message(mode)
+    try:
+        pools = collect_candidate_pools(mode)
+        ranked = rank_and_summarize(pools, config["ANTHROPIC_API_KEY"])
+    except Exception:
+        logger.exception("후보 수집 또는 Claude 랭킹/요약 실패")
+        return 1
+
+    message = format_final_message(mode, ranked)
     try:
         send_telegram_message(config["TELEGRAM_BOT_TOKEN"], config["TELEGRAM_CHAT_ID"], message)
     except Exception:
         logger.exception("텔레그램 발송 실패")
         return 1
 
-    logger.info("Phase 0 end-to-end 발송 완료 (mode=%s)", mode)
+    logger.info(
+        "실행 완료 (mode=%s): 기술 %d건, 비즈니스 %d건 발송",
+        mode,
+        len(ranked.get("tech", [])),
+        len(ranked.get("biz", [])),
+    )
     return 0
 
 

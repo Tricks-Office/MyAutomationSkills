@@ -107,9 +107,16 @@ Hacker News에서 AI 관련 스토리를 수집해 규칙 기반으로 "기술"/
   `TELEGRAM_CHAT_ID`(텔레그램). HN Algolia API는 인증 불필요
 - **Python 패키지(초안)**: `requests`, `anthropic`, `python-dotenv`, `sqlite3`(표준 라이브러리).
   정확한 버전은 골격 작성 단계에서 확정
-- **구현 단계 사전 확인 필요 항목**: HN Algolia API의 정확한 쿼리 파라미터(`numericFilters`,
-  `tags` 조합)와 응답 스키마는 골격 작성 시 실제 호출로 재검증한다 (이번 문서 작성 단계에서는
-  공개 문서 기준으로만 설계함)
+- **HN Algolia API 스펙 확인 결과 (Phase 0에서 실제 호출로 검증 완료)**:
+  - 엔드포인트: `https://hn.algolia.com/api/v1/search_by_date` — `search`(관련도순)가 아닌
+    `search_by_date`를 사용해야 기간 필터링 후 직접 Hot 점수로 재정렬하는 이번 설계에 맞다.
+  - 주요 파라미터: `query`(검색어), `tags=story`(스토리만, 댓글 제외), `numericFilters=created_at_i>{unix_timestamp}`
+    (기간 필터), `hitsPerPage`(최대 결과 수)
+  - 응답의 `hits[]` 항목에서 사용할 필드: `objectID`(발송 이력 dedup 키), `title`, `url`(Show HN/Ask HN
+    등 자체 게시물은 없을 수 있음 — 없으면 `https://news.ycombinator.com/item?id={objectID}`로 대체),
+    `story_text`(자체 게시물 본문, AI 키워드 매칭에 함께 사용), `points`, `num_comments`, `created_at_i`
+  - 인증 불필요, 별도 API 키 없음. rate limit 관련 에러 응답은 이번 확인 과정에서 발생하지 않음
+    (daily/weekly 각 1회 호출이라 영향 적을 것으로 판단)
 
 ## 9. 테스트 시나리오
 | 시나리오 | 입력 | 기대 결과 |

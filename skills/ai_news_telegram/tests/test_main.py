@@ -109,47 +109,70 @@ def _stub_run_env(monkeypatch, tmp_path):
 
 def test_run_returns_success_when_send_succeeds(monkeypatch, tmp_path):
     _stub_run_env(monkeypatch, tmp_path)
-    monkeypatch.setattr(main, "collect_candidate_pools", lambda mode: {"tech": [], "biz": []})
-    monkeypatch.setattr(main, "rank_and_summarize", lambda pools, api_key: {"tech": [], "biz": []})
+    story = _make_story(item_id="abc", title="new AI model research paper")
+    ranked_result = {"tech": [_make_ranked_item(1)], "biz": []}
+    monkeypatch.setattr(main, "collect_candidate_pools", lambda mode, db_path: {"tech": [story], "biz": []})
+    monkeypatch.setattr(main, "rank_and_summarize", lambda pools, api_key: ranked_result)
 
     sent = {}
+    recorded = {}
     monkeypatch.setattr(
         main,
         "send_telegram_message",
         lambda token, chat_id, text: sent.update(token=token, chat_id=chat_id, text=text),
     )
+    monkeypatch.setattr(
+        main, "record_sent_items", lambda db_path, ranked: recorded.update(ranked=ranked)
+    )
 
-    assert main.run("daily") == 0
+    exit_code = main.run("daily", db_path=tmp_path / "sent_items.db")
+
+    assert exit_code == 0
     assert sent["token"] == "test-token"
-    assert "발견된 소식이 없습니다" in sent["text"]
+    assert ranked_result["tech"][0]["title_ko"] in sent["text"]
+    assert recorded["ranked"] == ranked_result
+
+
+def test_run_skips_claude_call_when_no_candidates(monkeypatch, tmp_path):
+    _stub_run_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "collect_candidate_pools", lambda mode, db_path: {"tech": [], "biz": []})
+
+    def _fail_if_called(pools, api_key):
+        raise AssertionError("후보가 없으면 Claude를 호출하면 안 됨")
+
+    monkeypatch.setattr(main, "rank_and_summarize", _fail_if_called)
+    monkeypatch.setattr(main, "send_telegram_message", lambda token, chat_id, text: None)
+
+    assert main.run("daily", db_path=tmp_path / "sent_items.db") == 0
 
 
 def test_run_returns_failure_when_candidate_collection_fails(monkeypatch, tmp_path):
     _stub_run_env(monkeypatch, tmp_path)
 
-    def _raise(mode):
+    def _raise(mode, db_path):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(main, "collect_candidate_pools", _raise)
 
-    assert main.run("daily") == 1
+    assert main.run("daily", db_path=tmp_path / "sent_items.db") == 1
 
 
 def test_run_returns_failure_when_ranking_fails(monkeypatch, tmp_path):
     _stub_run_env(monkeypatch, tmp_path)
-    monkeypatch.setattr(main, "collect_candidate_pools", lambda mode: {"tech": [], "biz": []})
+    story = _make_story(item_id="abc", title="new AI model research paper")
+    monkeypatch.setattr(main, "collect_candidate_pools", lambda mode, db_path: {"tech": [story], "biz": []})
 
     def _raise(pools, api_key):
         raise main.RankingError("boom")
 
     monkeypatch.setattr(main, "rank_and_summarize", _raise)
 
-    assert main.run("daily") == 1
+    assert main.run("daily", db_path=tmp_path / "sent_items.db") == 1
 
 
 def test_run_returns_failure_when_send_fails(monkeypatch, tmp_path):
     _stub_run_env(monkeypatch, tmp_path)
-    monkeypatch.setattr(main, "collect_candidate_pools", lambda mode: {"tech": [], "biz": []})
+    monkeypatch.setattr(main, "collect_candidate_pools", lambda mode, db_path: {"tech": [], "biz": []})
     monkeypatch.setattr(main, "rank_and_summarize", lambda pools, api_key: {"tech": [], "biz": []})
 
     def _raise(token, chat_id, text):
@@ -157,7 +180,21 @@ def test_run_returns_failure_when_send_fails(monkeypatch, tmp_path):
 
     monkeypatch.setattr(main, "send_telegram_message", _raise)
 
-    assert main.run("daily") == 1
+    assert main.run("daily", db_path=tmp_path / "sent_items.db") == 1
+
+
+def test_run_returns_failure_when_record_sent_items_fails(monkeypatch, tmp_path):
+    _stub_run_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "collect_candidate_pools", lambda mode, db_path: {"tech": [], "biz": []})
+    monkeypatch.setattr(main, "rank_and_summarize", lambda pools, api_key: {"tech": [], "biz": []})
+    monkeypatch.setattr(main, "send_telegram_message", lambda token, chat_id, text: None)
+
+    def _raise(db_path, ranked):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(main, "record_sent_items", _raise)
+
+    assert main.run("daily", db_path=tmp_path / "sent_items.db") == 1
 
 
 def test_run_returns_failure_when_env_missing(monkeypatch, tmp_path):
@@ -166,7 +203,7 @@ def test_run_returns_failure_when_env_missing(monkeypatch, tmp_path):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
 
-    assert main.run("daily") == 1
+    assert main.run("daily", db_path=tmp_path / "sent_items.db") == 1
 
 
 def test_fetch_hn_stories_merges_and_dedupes_across_keywords(monkeypatch):
@@ -326,17 +363,67 @@ def test_build_candidate_pools_caps_pool_size():
     assert pools["tech"][0].points == 19
 
 
-def test_collect_candidate_pools_orchestrates_pipeline(monkeypatch):
-    ai_story = _make_story(title="new AI model research paper", points=5, num_comments=1)
-    unrelated_story = _make_story(title="totally unrelated post", points=99, num_comments=99)
+def test_get_sent_item_ids_empty_when_db_not_created(tmp_path):
+    assert main.get_sent_item_ids(tmp_path / "sent_items.db") == set()
+
+
+def test_record_sent_items_then_get_sent_item_ids_roundtrip(tmp_path):
+    db_path = tmp_path / "sent_items.db"
+    ranked = {
+        "tech": [{"item_id": "t1"}, {"item_id": "t2"}],
+        "biz": [{"item_id": "b1"}],
+    }
+
+    main.record_sent_items(db_path, ranked)
+
+    assert main.get_sent_item_ids(db_path) == {"t1", "t2", "b1"}
+
+
+def test_record_sent_items_is_idempotent_for_same_item(tmp_path):
+    db_path = tmp_path / "sent_items.db"
+    ranked = {"tech": [{"item_id": "t1"}], "biz": []}
+
+    main.record_sent_items(db_path, ranked)
+    main.record_sent_items(db_path, ranked)
+
+    assert main.get_sent_item_ids(db_path) == {"t1"}
+
+
+def test_exclude_sent_items_filters_out_known_ids():
+    sent_story = _make_story(item_id="sent-1")
+    fresh_story = _make_story(item_id="fresh-1")
+
+    result = main.exclude_sent_items([sent_story, fresh_story], {"sent-1"})
+
+    assert result == [fresh_story]
+
+
+def test_collect_candidate_pools_orchestrates_pipeline(monkeypatch, tmp_path):
+    ai_story = _make_story(item_id="ai-1", title="new AI model research paper", points=5, num_comments=1)
+    unrelated_story = _make_story(item_id="unrelated-1", title="totally unrelated post", points=99, num_comments=99)
 
     monkeypatch.setattr(main, "fetch_hn_stories", lambda mode: [ai_story, unrelated_story])
 
-    pools = main.collect_candidate_pools("daily")
+    pools = main.collect_candidate_pools("daily", db_path=tmp_path / "sent_items.db")
 
     all_ids = {s.item_id for items in pools.values() for s in items}
     assert ai_story.item_id in all_ids
     assert len(pools["tech"]) + len(pools["biz"]) == 1
+
+
+def test_collect_candidate_pools_excludes_previously_sent_items(monkeypatch, tmp_path):
+    db_path = tmp_path / "sent_items.db"
+    already_sent = _make_story(item_id="sent-1", title="new AI model research paper")
+    fresh = _make_story(item_id="fresh-1", title="new AI model research benchmark")
+
+    monkeypatch.setattr(main, "fetch_hn_stories", lambda mode: [already_sent, fresh])
+    main.record_sent_items(db_path, {"tech": [{"item_id": "sent-1"}], "biz": []})
+
+    pools = main.collect_candidate_pools("daily", db_path=db_path)
+
+    all_ids = {s.item_id for items in pools.values() for s in items}
+    assert "sent-1" not in all_ids
+    assert "fresh-1" in all_ids
 
 
 def test_merge_ranked_items_filters_unknown_ids():

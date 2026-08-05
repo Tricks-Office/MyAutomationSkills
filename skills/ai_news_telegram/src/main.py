@@ -2,10 +2,8 @@
 
 Hacker News에서 AI 관련 스토리를 수집해 규칙 기반으로 기술/비즈니스 카테고리로 분류하고,
 Claude API 1회 호출로 카테고리별 Top5 랭킹/한국어 요약을 생성해 텔레그램으로 발송한다.
-요구사항은 docs/PRD.md, docs/SRS.md, 구현 순서는 docs/IMPLEMENTATION_PLAN.md 참고.
-
-발송 이력 기반 중복 방지(SRS FR-6/FR-11)와 세부 예외 처리는 아직 없다 (Implementation
-Plan Phase 3에서 구현 예정).
+이미 발송한 글은 skills/ai_news_telegram/data/sent_items.db에 기록해 중복 발송을
+방지한다. 요구사항은 docs/PRD.md, docs/SRS.md, 구현 순서는 docs/IMPLEMENTATION_PLAN.md 참고.
 """
 from __future__ import annotations
 
@@ -14,9 +12,11 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 import anthropic
@@ -24,6 +24,8 @@ import requests
 from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+SKILL_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SENT_ITEMS_DB_PATH = SKILL_ROOT / "data" / "sent_items.db"
 REQUEST_TIMEOUT_SECONDS = 30
 
 HN_SEARCH_URL = "https://hn.algolia.com/api/v1/search_by_date"
@@ -267,11 +269,59 @@ def build_candidate_pools(
     return pools
 
 
-def collect_candidate_pools(mode: str) -> dict[str, list[HNStory]]:
-    """SRS 6절 [검색]→[필터링]→[분류]→[점수화] 단계를 순서대로 실행한다."""
+def init_sent_items_db(db_path: Path) -> None:
+    """발송 이력 DB 스키마를 생성한다 (이미 있으면 유지)."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sent_item (
+                item_id TEXT PRIMARY KEY,
+                category TEXT NOT NULL,
+                sent_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+
+def get_sent_item_ids(db_path: Path) -> set[str]:
+    """SRS FR-6: 이전 실행에서 이미 발송한 item_id 목록을 조회한다."""
+    init_sent_items_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT item_id FROM sent_item").fetchall()
+    return {row[0] for row in rows}
+
+
+def record_sent_items(db_path: Path, ranked: dict[str, list[dict]]) -> None:
+    """SRS FR-11: 발송에 성공한 뒤, 이번에 선정된 item_id를 발송 이력 DB에 기록한다."""
+    init_sent_items_db(db_path)
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        for category, items in ranked.items():
+            for item in items:
+                conn.execute(
+                    "INSERT OR REPLACE INTO sent_item (item_id, category, sent_at) VALUES (?, ?, ?)",
+                    (item["item_id"], category, now),
+                )
+        conn.commit()
+
+
+def exclude_sent_items(stories: list[HNStory], sent_ids: set[str]) -> list[HNStory]:
+    """SRS FR-6: 발송 이력 DB에 있는 item_id는 후보에서 제외한다."""
+    filtered = [story for story in stories if story.item_id not in sent_ids]
+    logger.info("발송 이력 제외: %d/%d건 남음", len(filtered), len(stories))
+    return filtered
+
+
+def collect_candidate_pools(
+    mode: str, db_path: Path = DEFAULT_SENT_ITEMS_DB_PATH
+) -> dict[str, list[HNStory]]:
+    """SRS 6절 [검색]→[필터링]→[발송 이력 제외]→[분류]→[점수화] 단계를 순서대로 실행한다."""
     stories = fetch_hn_stories(mode)
     ai_stories = filter_ai_related(stories)
-    return build_candidate_pools(ai_stories)
+    fresh_stories = exclude_sent_items(ai_stories, get_sent_item_ids(db_path))
+    return build_candidate_pools(fresh_stories)
 
 
 class RankingError(RuntimeError):
@@ -416,9 +466,9 @@ def format_final_message(mode: str, ranked: dict[str, list[dict]]) -> str:
     return "\n".join(sections)
 
 
-def run(mode: str) -> int:
-    """SRS 6절 처리 흐름(발송 이력 DB 제외): 설정 로드 → 후보 수집 → Claude 랭킹/요약
-    → 포맷팅 → 발송. 성공 0, 완전 실패 시 0이 아닌 값."""
+def run(mode: str, db_path: Path = DEFAULT_SENT_ITEMS_DB_PATH) -> int:
+    """SRS 6절 처리 흐름: 설정 로드 → 후보 수집(발송 이력 제외) → Claude 랭킹/요약
+    → 포맷팅 → 발송 → 발송 이력 기록. 성공 0, 완전 실패 시 0이 아닌 값."""
     try:
         config = load_config()
     except RequiredEnvMissingError:
@@ -426,8 +476,14 @@ def run(mode: str) -> int:
         return 1
 
     try:
-        pools = collect_candidate_pools(mode)
-        ranked = rank_and_summarize(pools, config["ANTHROPIC_API_KEY"])
+        pools = collect_candidate_pools(mode, db_path)
+        if pools.get("tech") or pools.get("biz"):
+            ranked = rank_and_summarize(pools, config["ANTHROPIC_API_KEY"])
+        else:
+            # SRS 7절: AI 필터 통과 건수 0건은 완전 실패가 아니다. Claude를 호출할
+            # 후보 자체가 없으므로(AI 사용 최소화) 빈 결과로 바로 진행한다.
+            logger.info("카테고리별 후보가 모두 0건이라 Claude 호출을 건너뜀")
+            ranked = {"tech": [], "biz": []}
     except Exception:
         logger.exception("후보 수집 또는 Claude 랭킹/요약 실패")
         return 1
@@ -437,6 +493,12 @@ def run(mode: str) -> int:
         send_telegram_message(config["TELEGRAM_BOT_TOKEN"], config["TELEGRAM_CHAT_ID"], message)
     except Exception:
         logger.exception("텔레그램 발송 실패")
+        return 1
+
+    try:
+        record_sent_items(db_path, ranked)
+    except Exception:
+        logger.exception("발송 이력 DB 기록 실패 (텔레그램 발송은 이미 완료됨)")
         return 1
 
     logger.info(

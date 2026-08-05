@@ -9,6 +9,10 @@
 data/*.db
 data/*.sqlite3
 
+# 스킬 하나만 쓰는 로컬 데이터(캐시 등, CLAUDE.md 2절 참고)
+skills/*/data/*.db
+skills/*/data/*.sqlite3
+
 # Python
 __pycache__/
 *.pyc

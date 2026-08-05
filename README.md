@@ -9,6 +9,8 @@
 |---|---|---|
 | _example_skill | 신규 스킬 작성 시 참고용 골격 예시 (실제 스킬 아님) | 예시 |
 | [marathon_finder](skills/marathon_finder/) | 한국/중국 남경의 접수중인 5km 이상 도로 레이스를 찾아 DB에 저장하고 텔레그램으로 요약 발송 | 완료 |
+| [marathon_notify_toggle](skills/marathon_notify_toggle/) | 등록된 마라톤 대회의 텔레그램 알림을 이름/id로 특정해 해제하거나 재활성화 | 완료 |
+| [marathon_search](skills/marathon_search/) | 등록된 마라톤 대회를 알림 여부/기간/장소/대회명 조건(AND/OR)으로 검색해 조회 | 완료 |
 
 ## 새 스킬 추가하기
 [CLAUDE.md의 "신규 스킬 추가 워크플로우"](CLAUDE.md#4-신규-스킬-추가-워크플로우-체크리스트) 참고.

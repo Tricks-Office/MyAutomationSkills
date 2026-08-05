@@ -138,3 +138,71 @@ def test_run_returns_failure_when_env_missing(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
 
     assert main.run("daily") == 1
+
+
+def test_fetch_hn_stories_merges_and_dedupes_across_keywords(monkeypatch):
+    calls = []
+
+    class _FakeResponse:
+        def __init__(self, hits):
+            self._hits = hits
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"hits": self._hits}
+
+    def _fake_get(url, params, timeout):
+        calls.append(params)
+        idx = len(calls)
+        return _FakeResponse(
+            [
+                {"objectID": "shared", "title": "shared story", "points": 1, "num_comments": 0, "created_at_i": 100},
+                {"objectID": f"unique-{idx}", "title": f"story {idx}", "points": idx, "num_comments": 0, "created_at_i": 100},
+            ]
+        )
+
+    monkeypatch.setattr(main.requests, "get", _fake_get)
+
+    stories = main.fetch_hn_stories("daily", now=1_000_000)
+
+    assert len(calls) == len(main.AI_KEYWORDS)
+    assert len(stories) == 1 + len(main.AI_KEYWORDS)
+    ids = {s.item_id for s in stories}
+    assert "shared" in ids
+    expected_since = 1_000_000 - main.MODE_WINDOW_SECONDS["daily"]
+    assert all(p["numericFilters"] == f"created_at_i>{expected_since}" for p in calls)
+
+
+def test_fetch_hn_stories_uses_wider_window_for_weekly(monkeypatch):
+    calls = []
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"hits": []}
+
+    def _fake_get(url, params, timeout):
+        calls.append(params)
+        return _FakeResponse()
+
+    monkeypatch.setattr(main.requests, "get", _fake_get)
+    main.fetch_hn_stories("weekly", now=1_000_000)
+
+    expected_since = 1_000_000 - main.MODE_WINDOW_SECONDS["weekly"]
+    assert all(p["numericFilters"] == f"created_at_i>{expected_since}" for p in calls)
+
+
+def test_hn_story_from_hit_falls_back_to_discussion_url():
+    story = main._hn_story_from_hit(
+        {"objectID": "123", "title": "Ask HN: something", "points": 5, "num_comments": 2, "created_at_i": 1}
+    )
+    assert story is not None
+    assert story.url == "https://news.ycombinator.com/item?id=123"
+
+
+def test_hn_story_from_hit_returns_none_without_object_id():
+    assert main._hn_story_from_hit({"title": "no id"}) is None

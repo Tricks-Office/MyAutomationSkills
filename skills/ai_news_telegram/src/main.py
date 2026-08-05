@@ -13,6 +13,8 @@ import argparse
 import logging
 import os
 import sys
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import requests
@@ -21,8 +23,41 @@ from dotenv import load_dotenv
 REPO_ROOT = Path(__file__).resolve().parents[3]
 REQUEST_TIMEOUT_SECONDS = 30
 
+HN_SEARCH_URL = "https://hn.algolia.com/api/v1/search_by_date"
+HN_HITS_PER_PAGE = 1000
+MODE_WINDOW_SECONDS = {"daily": 86400, "weekly": 86400 * 7}
+
+# SRS FR-4: AI 관련 스토리 판별 키워드 (title/story_text 매칭, 대소문자 무시)
+AI_KEYWORDS = [
+    "ai",
+    "artificial intelligence",
+    "llm",
+    "gpt",
+    "machine learning",
+    "generative",
+    "openai",
+    "anthropic",
+    "claude",
+    "gemini",
+    "deep learning",
+    "neural network",
+]
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class HNStory:
+    item_id: str
+    title: str
+    url: str
+    text: str
+    points: int
+    num_comments: int
+    created_at_i: int
+    category: str | None = field(default=None)
+    hot_score: float | None = field(default=None)
 
 
 class RequiredEnvMissingError(RuntimeError):
@@ -49,6 +84,57 @@ def load_config() -> dict[str, str]:
     if missing:
         raise RequiredEnvMissingError(f"필수 환경변수 누락: {', '.join(missing)}")
     return {key: os.environ[key] for key in required}
+
+
+def _hn_story_from_hit(hit: dict) -> HNStory | None:
+    object_id = hit.get("objectID")
+    if not object_id:
+        return None
+    return HNStory(
+        item_id=object_id,
+        title=hit.get("title") or "",
+        url=hit.get("url") or f"https://news.ycombinator.com/item?id={object_id}",
+        text=hit.get("story_text") or "",
+        points=hit.get("points") or 0,
+        num_comments=hit.get("num_comments") or 0,
+        created_at_i=hit.get("created_at_i") or 0,
+    )
+
+
+def _search_hn(query: str, since: int) -> list[dict]:
+    params = {
+        "query": query,
+        "tags": "story",
+        "numericFilters": f"created_at_i>{since}",
+        "hitsPerPage": HN_HITS_PER_PAGE,
+    }
+    response = requests.get(HN_SEARCH_URL, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    return response.json().get("hits", [])
+
+
+def fetch_hn_stories(mode: str, now: int | None = None) -> list[HNStory]:
+    """HN Algolia API에서 기간 필터를 적용해 AI 관련 스토리를 검색한다 (SRS FR-3).
+
+    HN Algolia의 `query`는 여러 단어를 한 번에 넘기면 AND(모두 포함) 조건으로 동작해
+    ("ai openai"처럼 결합하면 두 단어를 모두 포함한 글만 반환) 키워드 하나를 통으로
+    묶어 보낼 수 없다. 그래서 AI_KEYWORDS 각각으로 개별 검색해 objectID 기준으로
+    합치는(OR) 방식을 쓴다. AI 관련 여부의 최종 판단은 filter_ai_related()가 한 번 더
+    맡는다 (SRS FR-4).
+    """
+    now = now if now is not None else int(time.time())
+    since = now - MODE_WINDOW_SECONDS[mode]
+
+    stories_by_id: dict[str, HNStory] = {}
+    for keyword in AI_KEYWORDS:
+        for hit in _search_hn(keyword, since):
+            story = _hn_story_from_hit(hit)
+            if story is not None and story.item_id not in stories_by_id:
+                stories_by_id[story.item_id] = story
+
+    stories = list(stories_by_id.values())
+    logger.info("HN 검색 완료 (mode=%s): %d건(중복 제거 후)", mode, len(stories))
+    return stories
 
 
 def send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:

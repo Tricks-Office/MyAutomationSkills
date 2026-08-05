@@ -10,6 +10,7 @@ Phase 0(뼈대): 실제 HN 검색/분류/Claude 랭킹 로직은 아직 없다. 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -18,6 +19,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import anthropic
 import requests
 from dotenv import load_dotenv
 
@@ -81,6 +83,30 @@ BIZ_KEYWORDS = [
     "investor",
     "startup",
 ]
+
+CATEGORY_LABELS = {"tech": "📌 AI 기술 Hot 5", "biz": "💼 AI 비즈니스 Hot 5"}
+
+# SRS FR-8: Claude 응답 구조. item_id는 후보 목록의 값을 그대로 돌려받아야
+# 랭킹 결과를 원본 HNStory(url/points/comments)와 다시 연결할 수 있다.
+RANKING_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "item_id": {"type": "string"},
+        "title_ko": {"type": "string"},
+        "summary_ko": {"type": "string"},
+    },
+    "required": ["item_id", "title_ko", "summary_ko"],
+    "additionalProperties": False,
+}
+RANKING_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tech": {"type": "array", "items": RANKING_ITEM_SCHEMA},
+        "biz": {"type": "array", "items": RANKING_ITEM_SCHEMA},
+    },
+    "required": ["tech", "biz"],
+    "additionalProperties": False,
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -245,6 +271,91 @@ def collect_candidate_pools(mode: str) -> dict[str, list[HNStory]]:
     stories = fetch_hn_stories(mode)
     ai_stories = filter_ai_related(stories)
     return build_candidate_pools(ai_stories)
+
+
+class RankingError(RuntimeError):
+    """Claude 랭킹/요약 호출 또는 응답 파싱이 실패했을 때 발생 (SRS 7절: 완전 실패)."""
+
+
+def _build_ranking_prompt(pools: dict[str, list[HNStory]]) -> str:
+    lines = [
+        "아래 Hacker News 후보 중에서 카테고리별로 실제로 가장 화제성 있는(Hot) 소식을 골라줘.",
+        "규칙:",
+        "- tech, biz 각 카테고리에서 최대 5개까지 선정한다. 후보가 5개보다 적으면 있는 만큼만 선정한다.",
+        "- item_id는 아래 후보 목록에 있는 값을 그대로 사용해야 하며, 목록에 없는 item_id를 만들어내면 안 된다.",
+        "- title_ko는 원문 제목을 자연스러운 한국어로 번역/의역한다.",
+        "- summary_ko는 핵심 내용을 한국어 한 문장으로 요약한다.",
+        "",
+        "[기술(tech) 후보]",
+    ]
+    for story in pools.get("tech", []):
+        lines.append(f"- item_id={story.item_id} | points={story.points} comments={story.num_comments} | {story.title}")
+    lines.append("")
+    lines.append("[비즈니스(biz) 후보]")
+    for story in pools.get("biz", []):
+        lines.append(f"- item_id={story.item_id} | points={story.points} comments={story.num_comments} | {story.title}")
+    return "\n".join(lines)
+
+
+def _merge_ranked_items(pool: list[HNStory], ranked_items: list[dict]) -> list[dict]:
+    """Claude가 반환한 item_id를 원본 HNStory(url/points/comments)와 다시 연결한다.
+
+    후보 목록에 없는 item_id를 반환하면(모델의 실수) 조용히 건너뛴다 — 없는 링크로
+    발송하는 것보다 안전하다.
+    """
+    pool_by_id = {story.item_id: story for story in pool}
+    merged = []
+    for item in ranked_items:
+        story = pool_by_id.get(item.get("item_id"))
+        if story is None:
+            logger.warning("Claude가 후보 목록에 없는 item_id를 반환해 건너뜀: %s", item.get("item_id"))
+            continue
+        merged.append(
+            {
+                "item_id": story.item_id,
+                "title_ko": item.get("title_ko", ""),
+                "summary_ko": item.get("summary_ko", ""),
+                "url": story.url,
+                "points": story.points,
+                "num_comments": story.num_comments,
+            }
+        )
+    return merged
+
+
+def rank_and_summarize(pools: dict[str, list[HNStory]], api_key: str) -> dict[str, list[dict]]:
+    """SRS FR-8: Claude API를 1회 호출해 카테고리별 최종 Top5 + 한국어 요약을 만든다."""
+    client = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model="claude-opus-5",
+        max_tokens=4096,
+        output_config={"format": {"type": "json_schema", "schema": RANKING_SCHEMA}},
+        messages=[{"role": "user", "content": _build_ranking_prompt(pools)}],
+    )
+
+    if response.stop_reason == "refusal":
+        raise RankingError("Claude 랭킹 요청이 거부됨(stop_reason=refusal)")
+
+    text_blocks = [block.text for block in response.content if block.type == "text"]
+    if not text_blocks:
+        raise RankingError(f"Claude 응답에 텍스트 블록 없음, 원본 응답: {response.content}")
+
+    raw_text = text_blocks[-1]
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise RankingError(f"Claude 응답 JSON 파싱 실패, 원본 응답: {raw_text}") from exc
+
+    ranked = {
+        "tech": _merge_ranked_items(pools.get("tech", []), payload.get("tech", [])),
+        "biz": _merge_ranked_items(pools.get("biz", []), payload.get("biz", [])),
+    }
+    logger.info(
+        "Claude 랭킹/요약 완료: 기술 %d건, 비즈니스 %d건",
+        len(ranked["tech"]),
+        len(ranked["biz"]),
+    )
+    return ranked
 
 
 def send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:

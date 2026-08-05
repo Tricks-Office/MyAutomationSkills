@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -208,11 +209,18 @@ def test_hn_story_from_hit_returns_none_without_object_id():
     assert main._hn_story_from_hit({"title": "no id"}) is None
 
 
-def _make_story(title: str = "", text: str = "", points: int = 0, num_comments: int = 0) -> main.HNStory:
+def _make_story(
+    title: str = "",
+    text: str = "",
+    points: int = 0,
+    num_comments: int = 0,
+    item_id: str = "1",
+    url: str = "https://example.com",
+) -> main.HNStory:
     return main.HNStory(
-        item_id="1",
+        item_id=item_id,
         title=title,
-        url="https://example.com",
+        url=url,
         text=text,
         points=points,
         num_comments=num_comments,
@@ -301,3 +309,100 @@ def test_collect_candidate_pools_orchestrates_pipeline(monkeypatch):
     all_ids = {s.item_id for items in pools.values() for s in items}
     assert ai_story.item_id in all_ids
     assert len(pools["tech"]) + len(pools["biz"]) == 1
+
+
+def test_merge_ranked_items_filters_unknown_ids():
+    story = _make_story(item_id="abc", title="t", points=5, num_comments=2, url="https://example.com/abc")
+
+    merged = main._merge_ranked_items(
+        [story],
+        [
+            {"item_id": "abc", "title_ko": "제목", "summary_ko": "요약"},
+            {"item_id": "unknown", "title_ko": "x", "summary_ko": "y"},
+        ],
+    )
+
+    assert len(merged) == 1
+    assert merged[0] == {
+        "item_id": "abc",
+        "title_ko": "제목",
+        "summary_ko": "요약",
+        "url": "https://example.com/abc",
+        "points": 5,
+        "num_comments": 2,
+    }
+
+
+class _FakeAnthropicBlock:
+    def __init__(self, text: str):
+        self.type = "text"
+        self.text = text
+
+
+class _FakeAnthropicResponse:
+    def __init__(self, stop_reason: str, content: list):
+        self.stop_reason = stop_reason
+        self.content = content
+
+
+class _FakeAnthropicMessages:
+    def __init__(self, response):
+        self._response = response
+
+    def create(self, **kwargs):
+        return self._response
+
+
+class _FakeAnthropicClient:
+    def __init__(self, response):
+        self._response = response
+
+    def __call__(self, api_key):
+        self.messages = _FakeAnthropicMessages(self._response)
+        return self
+
+
+def test_rank_and_summarize_parses_structured_response(monkeypatch):
+    story = _make_story(item_id="abc", title="t")
+    pools = {"tech": [story], "biz": []}
+    payload = json.dumps({"tech": [{"item_id": "abc", "title_ko": "제목", "summary_ko": "요약"}], "biz": []})
+    response = _FakeAnthropicResponse("end_turn", [_FakeAnthropicBlock(payload)])
+    monkeypatch.setattr(main.anthropic, "Anthropic", _FakeAnthropicClient(response))
+
+    ranked = main.rank_and_summarize(pools, "fake-key")
+
+    assert ranked["tech"][0]["title_ko"] == "제목"
+    assert ranked["biz"] == []
+
+
+def test_rank_and_summarize_raises_on_refusal(monkeypatch):
+    response = _FakeAnthropicResponse("refusal", [])
+    monkeypatch.setattr(main.anthropic, "Anthropic", _FakeAnthropicClient(response))
+
+    try:
+        main.rank_and_summarize({"tech": [], "biz": []}, "fake-key")
+        assert False, "RankingError가 발생해야 함"
+    except main.RankingError:
+        pass
+
+
+def test_rank_and_summarize_raises_on_invalid_json(monkeypatch):
+    response = _FakeAnthropicResponse("end_turn", [_FakeAnthropicBlock("not json")])
+    monkeypatch.setattr(main.anthropic, "Anthropic", _FakeAnthropicClient(response))
+
+    try:
+        main.rank_and_summarize({"tech": [], "biz": []}, "fake-key")
+        assert False, "RankingError가 발생해야 함"
+    except main.RankingError:
+        pass
+
+
+def test_rank_and_summarize_raises_when_no_text_block(monkeypatch):
+    response = _FakeAnthropicResponse("end_turn", [])
+    monkeypatch.setattr(main.anthropic, "Anthropic", _FakeAnthropicClient(response))
+
+    try:
+        main.rank_and_summarize({"tech": [], "biz": []}, "fake-key")
+        assert False, "RankingError가 발생해야 함"
+    except main.RankingError:
+        pass

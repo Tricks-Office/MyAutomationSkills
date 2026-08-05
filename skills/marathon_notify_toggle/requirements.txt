@@ -1,0 +1,1 @@
+# marathon_notify_toggle은 표준 라이브러리(sqlite3, argparse)만 사용하므로 외부 의존성이 없습니다.

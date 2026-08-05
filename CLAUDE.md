@@ -80,6 +80,21 @@ Automation_Script/
 - PRD/SRS가 없는 스킬 폴더는 미완성 상태로 간주하고 `skills/` 최상위에 커밋하지 않습니다.
 - 문서 없이 코드부터 작성해야 할 만큼 급한 경우에도, 코드 작성 직후 문서를 채워 넣고 별도 커밋으로 남깁니다.
 
+### 3.1.1 로직이 복잡한 경우: Implementation Plan으로 단계 분리
+SRS까지 작성했더라도, 아래 중 하나에 해당하면 SRS를 한 번에 구현하지 않고
+`docs/templates/Implementation_Plan_template.md`를 복사해 **Implementation Plan** 문서를
+추가로 작성한 뒤 단계(Phase)별로 구현합니다.
+- 연동해야 하는 외부 API/서비스가 2개 이상이거나, 상태 관리·재시도·롤백 로직이 얽혀 있음
+- 구현 전에 확인이 필요한 불확실한 부분(외부 스펙, 응답 포맷 등)이 있어 선(先) 조사가 필요함
+- SRS의 기능 요구사항(FR)들을 한 번의 구현 세션으로 끝내기 어렵다고 판단됨
+
+Implementation Plan은 SRS를 대체하지 않습니다. SRS는 "무엇을/왜" 만드는지를, Implementation
+Plan은 "어떤 순서(Phase)로" 만드는지를 다룹니다. 각 Phase는 독립적으로 동작 가능한 결과물이
+되도록 나누고, Phase 하나 안에서도 3.2의 단계별 커밋 원칙을 그대로 적용합니다.
+
+이 기준은 새로 시작하는(또는 아직 진행 중인) 스킬에만 적용합니다. 이미 완료된 스킬의 기존
+PRD/SRS 문서를 이 기준에 맞춰 소급 수정할 필요는 없습니다.
+
 ### 3.2 단계별 Git 커밋
 - 작업은 큰 단위로 몰아서 커밋하지 않고, 의미 있는 단계마다 커밋합니다.
   예: `1) PRD 작성` → `2) 기본 골격/의존성 구성` → `3) 핵심 로직 구현` → `4) 테스트 추가` → `5) skill.yaml 등록` → `6) 문서 보완`
@@ -138,6 +153,8 @@ version: 0.1.0
 ## 4. 신규 스킬 추가 워크플로우 (체크리스트)
 1. `skills/<skill_name>/` 폴더 생성
 2. `docs/templates/`에서 PRD 또는 SRS 템플릿 복사 → `docs/PRD.md`(또는 `SRS.md`) 작성 → 커밋
+   - 3.1.1 기준에 해당하면, `Implementation_Plan_template.md`를 복사해
+     `docs/IMPLEMENTATION_PLAN.md` 작성 → 커밋 (이후 4~5단계를 Phase마다 반복)
 3. `src/`, `requirements.txt`, 기본 골격 작성 → 커밋
 4. 핵심 로직 구현 → 커밋
 5. `tests/`에 최소 테스트 작성 → 커밋
@@ -148,4 +165,5 @@ version: 0.1.0
 ## 5. 템플릿 위치
 - PRD: [`docs/templates/PRD_template.md`](docs/templates/PRD_template.md)
 - SRS: [`docs/templates/SRS_template.md`](docs/templates/SRS_template.md)
+- Implementation Plan(로직이 복잡해 단계별 구현이 필요할 때, [3.1.1](#311-로직이-복잡한-경우-implementation-plan으로-단계-분리) 참고): [`docs/templates/Implementation_Plan_template.md`](docs/templates/Implementation_Plan_template.md)
 - 예시 스킬 골격: [`skills/_example_skill/`](skills/_example_skill/)

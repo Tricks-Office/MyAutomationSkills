@@ -262,3 +262,42 @@ def test_classify_category_breaks_tie_toward_tech_when_equal_counts():
     # "model"(기술) 1개, "funding"(비즈니스) 1개로 동률 → 기술
     story = _make_story(title="New model funding announced")
     assert main.classify_category(story) == "tech"
+
+
+def test_compute_hot_score_weights_comments_more_than_points():
+    high_comments = _make_story(points=10, num_comments=10)
+    high_points = _make_story(points=29, num_comments=0)
+    assert main.compute_hot_score(high_comments) > main.compute_hot_score(high_points)
+
+
+def test_build_candidate_pools_splits_and_ranks_by_category(monkeypatch):
+    tech_low = _make_story(title="new model paper", points=1, num_comments=0)
+    tech_high = _make_story(title="new model research benchmark", points=100, num_comments=50)
+    biz_story = _make_story(title="AI startup raises funding", points=10, num_comments=5)
+
+    pools = main.build_candidate_pools([tech_low, tech_high, biz_story])
+
+    assert [s.title for s in pools["tech"]] == [tech_high.title, tech_low.title]
+    assert [s.title for s in pools["biz"]] == [biz_story.title]
+
+
+def test_build_candidate_pools_caps_pool_size():
+    stories = [
+        _make_story(title=f"model research paper {i}", points=i, num_comments=0) for i in range(20)
+    ]
+    pools = main.build_candidate_pools(stories, pool_size=5)
+    assert len(pools["tech"]) == 5
+    assert pools["tech"][0].points == 19
+
+
+def test_collect_candidate_pools_orchestrates_pipeline(monkeypatch):
+    ai_story = _make_story(title="new AI model research paper", points=5, num_comments=1)
+    unrelated_story = _make_story(title="totally unrelated post", points=99, num_comments=99)
+
+    monkeypatch.setattr(main, "fetch_hn_stories", lambda mode: [ai_story, unrelated_story])
+
+    pools = main.collect_candidate_pools("daily")
+
+    all_ids = {s.item_id for items in pools.values() for s in items}
+    assert ai_story.item_id in all_ids
+    assert len(pools["tech"]) + len(pools["biz"]) == 1

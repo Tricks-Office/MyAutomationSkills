@@ -28,6 +28,11 @@ HN_SEARCH_URL = "https://hn.algolia.com/api/v1/search_by_date"
 HN_HITS_PER_PAGE = 1000
 MODE_WINDOW_SECONDS = {"daily": 86400, "weekly": 86400 * 7}
 
+# SRS FR-7: Hot 점수 = points + comments * 가중치. 댓글은 단순 동의 표시인 points보다
+# 적극적인 관여(논쟁/토론)를 나타낸다고 보고 더 높은 가중치를 준다.
+HOT_SCORE_COMMENT_WEIGHT = 2.0
+CANDIDATE_POOL_SIZE = 15
+
 # SRS FR-4: AI 관련 스토리 판별 키워드 (title/story_text 매칭, 대소문자 무시)
 AI_KEYWORDS = [
     "ai",
@@ -206,6 +211,40 @@ def classify_category(story: HNStory) -> str:
     tech_count = _count_keyword_matches(text, TECH_KEYWORDS)
     biz_count = _count_keyword_matches(text, BIZ_KEYWORDS)
     return "tech" if tech_count >= biz_count else "biz"
+
+
+def compute_hot_score(story: HNStory) -> float:
+    """SRS FR-7: 규칙 기반 인기 점수 = points + comments * HOT_SCORE_COMMENT_WEIGHT."""
+    return story.points + story.num_comments * HOT_SCORE_COMMENT_WEIGHT
+
+
+def build_candidate_pools(
+    stories: list[HNStory], pool_size: int = CANDIDATE_POOL_SIZE
+) -> dict[str, list[HNStory]]:
+    """SRS FR-5/FR-7: 카테고리를 매기고 Hot 점수 상위 pool_size건씩 후보 풀을 만든다."""
+    pools: dict[str, list[HNStory]] = {"tech": [], "biz": []}
+    for story in stories:
+        story.category = classify_category(story)
+        story.hot_score = compute_hot_score(story)
+        pools[story.category].append(story)
+
+    for category, items in pools.items():
+        items.sort(key=lambda s: s.hot_score, reverse=True)
+        pools[category] = items[:pool_size]
+
+    logger.info(
+        "카테고리별 후보 풀 구성 완료: 기술 %d건, 비즈니스 %d건",
+        len(pools["tech"]),
+        len(pools["biz"]),
+    )
+    return pools
+
+
+def collect_candidate_pools(mode: str) -> dict[str, list[HNStory]]:
+    """SRS 6절 [검색]→[필터링]→[분류]→[점수화] 단계를 순서대로 실행한다."""
+    stories = fetch_hn_stories(mode)
+    ai_stories = filter_ai_related(stories)
+    return build_candidate_pools(ai_stories)
 
 
 def send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:

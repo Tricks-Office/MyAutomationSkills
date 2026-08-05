@@ -1,0 +1,6 @@
+name: marathon_search
+description: data/marathon.db에 등록된 마라톤 대회를 알림 여부/기간/장소/대회명 조건(AND/OR 조합)으로 검색해 조회
+entrypoint: src/main.py
+trigger_keywords: [마라톤 검색, 대회 검색, 마라톤 조회, 대회 찾기, 마라톤 필터, 마라톤 목록]
+requirements: requirements.txt
+version: 0.1.0

@@ -167,3 +167,32 @@ version: 0.1.0
 - SRS: [`docs/templates/SRS_template.md`](docs/templates/SRS_template.md)
 - Implementation Plan(로직이 복잡해 단계별 구현이 필요할 때, [3.1.1](#311-로직이-복잡한-경우-implementation-plan으로-단계-분리) 참고): [`docs/templates/Implementation_Plan_template.md`](docs/templates/Implementation_Plan_template.md)
 - 예시 스킬 골격: [`skills/_example_skill/`](skills/_example_skill/)
+
+## 6. 스킬 코드에서 반복되는 공통 패턴
+
+`shared/`가 아직 비어 있어 코드로 추출되지는 않았지만, 기존 스킬들(`marathon_finder`,
+`marathon_notify_toggle`, `marathon_search`, `ai_news_telegram`)의 `src/main.py`는 아래
+패턴을 공통으로 따릅니다. 새 스킬을 작성할 때도 이 패턴을 재사용하세요.
+
+- **진입점은 `run(...) -> int`**: 핵심 로직을 `run()` 함수로 구현해 성공 시 `0`, 완전 실패 시
+  `0`이 아닌 값을 반환하고, `if __name__ == "__main__": sys.exit(run(...))`으로 그대로
+  프로세스 종료 코드에 반영합니다. Hermes/cron이 실행 로그를 따로 파싱하지 않고도 종료 코드만
+  으로 성공/실패를 판단할 수 있게 하기 위함입니다.
+- **사전 검증은 전용 예외 클래스로 표현**: 외부 API를 호출하는 스킬은 `.env` 필수값 누락을
+  `RequiredEnvMissingError`(`RuntimeError` 서브클래스)로, CLI 인자 조합 오류는
+  `ArgumentError`(`ValueError` 서브클래스)로 표현합니다. `run()` 시작부에서 이런 예외를 잡아
+  로그를 남기고 즉시 실패 반환하며, 이후 단계(DB 접근, API 호출 등)는 실행하지 않습니다.
+- **DB 경로는 인자로 주입 가능하게**: SQLite를 쓰는 스킬은 `DEFAULT_DB_PATH`를 모듈 상수로
+  두되 `run(db_path=...)`로 재정의할 수 있게 열어둡니다. 테스트에서 `tmp_path`를 넘겨 실제
+  데이터 파일을 건드리지 않고 검증할 수 있습니다. 여러 스킬이 공유하는 DB(`data/marathon.db`)
+  와 스킬 전용 DB(`skills/ai_news_telegram/data/sent_items.db`)가 실제로 이 패턴을 함께 씁니다.
+- **텔레그램 발송은 직접 구현**: Telegram Bot API를 `requests`로 직접 호출하고, 4096자 제한에
+  맞춰 4000자 단위로 잘라 순차 발송합니다(`send_telegram_message`). 아직 `shared/`로 뽑혀
+  있지 않아 스킬마다 재구현되어 있으니, 텔레그램 발송이 필요한 스킬을 또 추가한다면 이 시점에
+  `shared/telegram.py`로 추출하는 것을 고려하세요.
+- **Claude 구조화 출력 시 배열 크기 제한은 코드로 재검증**: LLM 응답을 그대로 코드에서 쓰려면
+  `client.messages.create(..., output_config={"format": {"type": "json_schema", "schema": ...}})`
+  로 JSON 스키마를 강제합니다. 단 이 스키마는 배열 필드의 `maxItems` 같은 일부 JSON Schema
+  키워드를 지원하지 않고(요청 시 400 에러), 프롬프트로 "최대 N개"를 지시해도 모델이 초과
+  반환하는 경우가 실제로 있었습니다. 개수 제한이 필요하면 응답을 받은 뒤 코드에서 슬라이싱
+  등으로 다시 한번 강제해야 합니다.

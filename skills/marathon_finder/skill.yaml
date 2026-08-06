@@ -3,4 +3,4 @@ description: 한국(marathonmate.store)/중국 남경(Claude web_search)의 접�
 entrypoint: src/main.py
 trigger_keywords: [마라톤, 러닝 대회, 남경 마라톤, 대회 일정, 접수중인 대회, 텔레그램 마라톤 알림]
 requirements: requirements.txt
-version: 0.1.0
+version: 0.1.1

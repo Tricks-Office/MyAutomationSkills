@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,14 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 )
+
+# SRS FR-10: marathonmate.store 목록 페이지 요청이 응답 지연으로 실패하면 그 실행의 한국
+# 대회 전체가 누락된다(ai_news_telegram의 HN API 타임아웃 장애와 같은 유형). 연결 오류/
+# 타임아웃/5xx만 재시도 대상(4xx는 재시도해도 결과가 같아 제외). 개별 대회 상세 페이지
+# 요청은 이미 실패 시 폴백이 있어 대상이 아니다.
+KOREA_SCHEDULE_REQUEST_TIMEOUT_SECONDS = 45
+KOREA_SCHEDULE_MAX_ATTEMPTS = 3
+KOREA_SCHEDULE_RETRY_BACKOFF_SECONDS = [1, 2]
 
 CHINA_RACE_SCHEMA = {
     "type": "object",
@@ -164,13 +173,44 @@ def _extract_registration_url(detail_html: str, fallback_url: str) -> str:
     return fallback_url
 
 
+def _is_retryable_request_error(exc: requests.exceptions.RequestException) -> bool:
+    """연결 오류/타임아웃은 항상 재시도, HTTPError는 5xx만 재시도(4xx는 반복해도 결과가 같음)."""
+    if isinstance(exc, requests.exceptions.HTTPError):
+        return exc.response is not None and exc.response.status_code >= 500
+    return True
+
+
+def _fetch_korea_schedule_html(headers: dict[str, str]) -> str:
+    """SRS FR-10: 목록 페이지 요청은 연결 오류/타임아웃/5xx에 한해 최대 3회까지 재시도한다."""
+    for attempt in range(1, KOREA_SCHEDULE_MAX_ATTEMPTS + 1):
+        try:
+            response = requests.get(
+                KOREA_SCHEDULE_URL, headers=headers, timeout=KOREA_SCHEDULE_REQUEST_TIMEOUT_SECONDS
+            )
+            response.raise_for_status()
+            return response.text
+        except requests.exceptions.RequestException as exc:
+            is_last_attempt = attempt == KOREA_SCHEDULE_MAX_ATTEMPTS
+            if is_last_attempt or not _is_retryable_request_error(exc):
+                logger.error("marathonmate.store 목록 페이지 요청 실패(재시도 중단), 원인=%s", exc)
+                raise
+            delay = KOREA_SCHEDULE_RETRY_BACKOFF_SECONDS[attempt - 1]
+            logger.warning(
+                "marathonmate.store 목록 페이지 요청 실패(%d/%d회 시도), %.0f초 뒤 재시도: 원인=%s",
+                attempt,
+                KOREA_SCHEDULE_MAX_ATTEMPTS,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+
+
 def fetch_korea_races() -> list[Race]:
     """marathonmate.store 크롤링 (SRS FR-2)."""
     headers = {"User-Agent": USER_AGENT}
-    response = requests.get(KOREA_SCHEDULE_URL, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
-    response.raise_for_status()
+    html = _fetch_korea_schedule_html(headers)
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
     races: list[Race] = []
 
     for row in soup.select("table tbody tr"):

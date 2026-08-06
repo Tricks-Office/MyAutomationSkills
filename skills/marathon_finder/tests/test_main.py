@@ -142,3 +142,90 @@ def test_run_returns_failure_when_both_sources_fail(monkeypatch, tmp_path):
     exit_code = main.run(db_path=db_path)
 
     assert exit_code == 1
+
+
+def _http_error(status_code: int) -> Exception:
+    class _FakeHttpResponse:
+        pass
+
+    fake_response = _FakeHttpResponse()
+    fake_response.status_code = status_code
+    return main.requests.exceptions.HTTPError(response=fake_response)
+
+
+def test_is_retryable_request_error_true_for_connection_and_timeout():
+    assert main._is_retryable_request_error(main.requests.exceptions.Timeout("timed out"))
+    assert main._is_retryable_request_error(main.requests.exceptions.ConnectionError("refused"))
+
+
+def test_is_retryable_request_error_true_for_5xx_false_for_4xx():
+    assert main._is_retryable_request_error(_http_error(503)) is True
+    assert main._is_retryable_request_error(_http_error(404)) is False
+
+
+def test_fetch_korea_schedule_html_retries_on_timeout_then_succeeds(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(main.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    class _FakeResponse:
+        text = "<html>ok</html>"
+
+        def raise_for_status(self):
+            pass
+
+    calls = {"count": 0}
+
+    def _fake_get(url, headers, timeout):
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise main.requests.exceptions.Timeout("timed out")
+        assert timeout == main.KOREA_SCHEDULE_REQUEST_TIMEOUT_SECONDS
+        return _FakeResponse()
+
+    monkeypatch.setattr(main.requests, "get", _fake_get)
+
+    html = main._fetch_korea_schedule_html({"User-Agent": "test"})
+
+    assert html == "<html>ok</html>"
+    assert calls["count"] == 3
+    assert sleeps == main.KOREA_SCHEDULE_RETRY_BACKOFF_SECONDS
+
+
+def test_fetch_korea_schedule_html_gives_up_after_max_attempts(monkeypatch):
+    monkeypatch.setattr(main.time, "sleep", lambda seconds: None)
+    calls = {"count": 0}
+
+    def _fake_get(url, headers, timeout):
+        calls["count"] += 1
+        raise main.requests.exceptions.ConnectionError("refused")
+
+    monkeypatch.setattr(main.requests, "get", _fake_get)
+
+    try:
+        main._fetch_korea_schedule_html({"User-Agent": "test"})
+        assert False, "ConnectionError가 발생해야 함"
+    except main.requests.exceptions.ConnectionError:
+        pass
+
+    assert calls["count"] == main.KOREA_SCHEDULE_MAX_ATTEMPTS
+
+
+def test_fetch_korea_schedule_html_does_not_retry_on_client_error(monkeypatch):
+    monkeypatch.setattr(
+        main.time, "sleep", lambda seconds: (_ for _ in ()).throw(AssertionError("재시도하면 안 됨"))
+    )
+    calls = {"count": 0}
+
+    def _fake_get(url, headers, timeout):
+        calls["count"] += 1
+        raise _http_error(404)
+
+    monkeypatch.setattr(main.requests, "get", _fake_get)
+
+    try:
+        main._fetch_korea_schedule_html({"User-Agent": "test"})
+        assert False, "HTTPError가 발생해야 함"
+    except main.requests.exceptions.HTTPError:
+        pass
+
+    assert calls["count"] == 1

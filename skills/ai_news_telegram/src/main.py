@@ -32,6 +32,12 @@ HN_SEARCH_URL = "https://hn.algolia.com/api/v1/search_by_date"
 HN_HITS_PER_PAGE = 1000
 MODE_WINDOW_SECONDS = {"daily": 86400, "weekly": 86400 * 7}
 
+# SRS FR-13: HN Algolia API 응답 지연으로 스킬 전체가 실패한 사례가 있어 도입.
+# 연결 오류/타임아웃/5xx만 재시도 대상(4xx는 재시도해도 결과가 같아 제외).
+HN_REQUEST_TIMEOUT_SECONDS = 45
+HN_SEARCH_MAX_ATTEMPTS = 3
+HN_SEARCH_RETRY_BACKOFF_SECONDS = [1, 2]
+
 # SRS FR-7: Hot 점수 = points + comments * 가중치. 댓글은 단순 동의 표시인 points보다
 # 적극적인 관여(논쟁/토론)를 나타낸다고 보고 더 높은 가중치를 준다.
 HOT_SCORE_COMMENT_WEIGHT = 2.0
@@ -169,16 +175,42 @@ def _hn_story_from_hit(hit: dict) -> HNStory | None:
     )
 
 
+def _is_retryable_hn_error(exc: requests.exceptions.RequestException) -> bool:
+    """연결 오류/타임아웃은 항상 재시도, HTTPError는 5xx만 재시도(4xx는 반복해도 결과가 같음)."""
+    if isinstance(exc, requests.exceptions.HTTPError):
+        return exc.response is not None and exc.response.status_code >= 500
+    return True
+
+
 def _search_hn(query: str, since: int) -> list[dict]:
+    """SRS FR-13: 연결 오류/타임아웃/5xx는 최대 HN_SEARCH_MAX_ATTEMPTS회까지 지수 백오프로 재시도."""
     params = {
         "query": query,
         "tags": "story",
         "numericFilters": f"created_at_i>{since}",
         "hitsPerPage": HN_HITS_PER_PAGE,
     }
-    response = requests.get(HN_SEARCH_URL, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
-    response.raise_for_status()
-    return response.json().get("hits", [])
+
+    for attempt in range(1, HN_SEARCH_MAX_ATTEMPTS + 1):
+        try:
+            response = requests.get(HN_SEARCH_URL, params=params, timeout=HN_REQUEST_TIMEOUT_SECONDS)
+            response.raise_for_status()
+            return response.json().get("hits", [])
+        except requests.exceptions.RequestException as exc:
+            is_last_attempt = attempt == HN_SEARCH_MAX_ATTEMPTS
+            if is_last_attempt or not _is_retryable_hn_error(exc):
+                logger.error("HN 검색 실패(재시도 중단), query=%s, 원인=%s", query, exc)
+                raise
+            delay = HN_SEARCH_RETRY_BACKOFF_SECONDS[attempt - 1]
+            logger.warning(
+                "HN 검색 실패(%d/%d회 시도), %.0f초 뒤 재시도: query=%s, 원인=%s",
+                attempt,
+                HN_SEARCH_MAX_ATTEMPTS,
+                delay,
+                query,
+                exc,
+            )
+            time.sleep(delay)
 
 
 def fetch_hn_stories(mode: str, now: int | None = None) -> list[HNStory]:

@@ -262,6 +262,92 @@ def test_fetch_hn_stories_uses_wider_window_for_weekly(monkeypatch):
     assert all(p["numericFilters"] == f"created_at_i>{expected_since}" for p in calls)
 
 
+def _http_error(status_code: int) -> Exception:
+    class _FakeHttpResponse:
+        pass
+
+    fake_response = _FakeHttpResponse()
+    fake_response.status_code = status_code
+    return main.requests.exceptions.HTTPError(response=fake_response)
+
+
+def test_is_retryable_hn_error_true_for_connection_and_timeout():
+    assert main._is_retryable_hn_error(main.requests.exceptions.Timeout("timed out"))
+    assert main._is_retryable_hn_error(main.requests.exceptions.ConnectionError("refused"))
+
+
+def test_is_retryable_hn_error_true_for_5xx_false_for_4xx():
+    assert main._is_retryable_hn_error(_http_error(503)) is True
+    assert main._is_retryable_hn_error(_http_error(400)) is False
+
+
+def test_search_hn_retries_on_timeout_then_succeeds(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(main.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"hits": [{"objectID": "1"}]}
+
+    calls = {"count": 0}
+
+    def _fake_get(url, params, timeout):
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise main.requests.exceptions.Timeout("timed out")
+        assert timeout == main.HN_REQUEST_TIMEOUT_SECONDS
+        return _FakeResponse()
+
+    monkeypatch.setattr(main.requests, "get", _fake_get)
+
+    hits = main._search_hn("AI", since=0)
+
+    assert hits == [{"objectID": "1"}]
+    assert calls["count"] == 3
+    assert sleeps == main.HN_SEARCH_RETRY_BACKOFF_SECONDS
+
+
+def test_search_hn_gives_up_after_max_attempts(monkeypatch):
+    monkeypatch.setattr(main.time, "sleep", lambda seconds: None)
+    calls = {"count": 0}
+
+    def _fake_get(url, params, timeout):
+        calls["count"] += 1
+        raise main.requests.exceptions.ConnectionError("refused")
+
+    monkeypatch.setattr(main.requests, "get", _fake_get)
+
+    try:
+        main._search_hn("AI", since=0)
+        assert False, "ConnectionError가 발생해야 함"
+    except main.requests.exceptions.ConnectionError:
+        pass
+
+    assert calls["count"] == main.HN_SEARCH_MAX_ATTEMPTS
+
+
+def test_search_hn_does_not_retry_on_client_error(monkeypatch):
+    monkeypatch.setattr(main.time, "sleep", lambda seconds: (_ for _ in ()).throw(AssertionError("재시도하면 안 됨")))
+    calls = {"count": 0}
+
+    def _fake_get(url, params, timeout):
+        calls["count"] += 1
+        raise _http_error(400)
+
+    monkeypatch.setattr(main.requests, "get", _fake_get)
+
+    try:
+        main._search_hn("AI", since=0)
+        assert False, "HTTPError가 발생해야 함"
+    except main.requests.exceptions.HTTPError:
+        pass
+
+    assert calls["count"] == 1
+
+
 def test_hn_story_from_hit_falls_back_to_discussion_url():
     story = main._hn_story_from_hit(
         {"objectID": "123", "title": "Ask HN: something", "points": 5, "num_comments": 2, "created_at_i": 1}

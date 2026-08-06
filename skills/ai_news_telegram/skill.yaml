@@ -3,4 +3,4 @@ description: Hacker News에서 AI 관련 기술/비즈니스 Hot 뉴스를 각 5
 entrypoint: src/main.py
 trigger_keywords: [AI 뉴스, AI 소식, 오늘의 AI 뉴스, 주간 AI 뉴스, AI 브리핑, 텔레그램 AI 뉴스]
 requirements: requirements.txt
-version: 0.1.0
+version: 0.1.1

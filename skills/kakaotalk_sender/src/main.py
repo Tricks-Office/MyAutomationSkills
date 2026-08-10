@@ -29,14 +29,19 @@ KAKAOTALK_PROCESS_NAME = "KakaoTalk"
 KAKAOTALK_MAIN_WINDOW_NAME = "카카오톡"
 KAKAOTALK_APP_PATH = Path("/Applications/KakaoTalk.app")
 
-OSASCRIPT_TIMEOUT_SECONDS = 15
+OSASCRIPT_TIMEOUT_SECONDS = 30
 CLICLICK_TIMEOUT_SECONDS = 10
 SEARCH_OPEN_DELAY_SECONDS = 0.5
 SEARCH_TYPE_DELAY_SECONDS = 0.8
 ROOM_OPEN_DELAY_SECONDS = 1.0
 PASTE_DELAY_SECONDS = 0.6
 SEND_VERIFY_POLL_INTERVAL_SECONDS = 0.5
-SEND_VERIFY_TIMEOUT_SECONDS = 5
+# 대화 내역에서 보낸 메시지를 찾는 AppleScript 호출(message_appears_in_history)은
+# 메시지가 길수록(예: 여러 항목을 담은 리포트) 문자열 비교에 걸리는 시간이 늘어나
+# OSASCRIPT_TIMEOUT_SECONDS에 가깝게 걸릴 수 있음이 실제 운영(ai_news_telegram 연동,
+# 약 2500자 리포트)에서 확인됐다. 짧게 잡으면 실제로는 전송에 성공했는데도 검증만
+# 시간 초과로 실패 처리되는 오탐이 발생해, 최소 한 번은 넉넉히 기다리도록 설정한다.
+SEND_VERIFY_TIMEOUT_SECONDS = 35
 APP_READY_TIMEOUT_SECONDS = 10
 APP_READY_POLL_INTERVAL_SECONDS = 0.5
 
@@ -503,6 +508,36 @@ def verify_message_sent(room_name: str, expected_text: str) -> bool:
     return False
 
 
+def close_all_room_windows() -> None:
+    """메인 목록 창("카카오톡")을 제외한 모든 창을 닫는다.
+
+    여러 방을 순차 처리할 때, 이전 방의 대화창(성공/실패/오동작으로 엉뚱하게 열린
+    창 포함)이 열려 있는 채로 다음 방을 검색하면 화면 좌표 클릭이 메인 목록 창이
+    아니라 열려 있는 대화창을 대신 맞힐 수 있다 — 실제로 여러 방을 연속 처리하는
+    시나리오(ai_news_telegram 연동)에서 이전 방 대화창의 메시지 입력창에 다음 방
+    검색어가 잘못 입력되는 사고가 재현됐다. 방 하나를 처리할 때마다(성공하든
+    실패하든) 반드시 호출해 다음 방 처리 전에 메인 목록 창만 남긴다."""
+    escaped_main = _escape_applescript_string(KAKAOTALK_MAIN_WINDOW_NAME)
+    script = f"""
+tell application "System Events"
+    tell process "{KAKAOTALK_PROCESS_NAME}"
+        set winList to every window
+        repeat with w in winList
+            if name of w is not "{escaped_main}" then
+                try
+                    click (button 1 of w whose subrole is "AXCloseButton")
+                end try
+            end if
+        end repeat
+    end tell
+end tell
+"""
+    try:
+        run_applescript(script)
+    except Exception:
+        logger.warning("방 창 정리 실패(다음 방 처리에 영향을 줄 수 있음)")
+
+
 def send_message_to_room(room_name: str, message: str) -> RoomSendResult:
     try:
         field_bounds = activate_kakaotalk_and_open_search()
@@ -533,6 +568,8 @@ def send_message_to_room(room_name: str, message: str) -> RoomSendResult:
     except Exception as exc:  # noqa: BLE001 - 방 단위 실패로 변환해 다음 방을 계속 처리
         logger.exception("방 '%s' 처리 중 예외 발생", room_name)
         return RoomSendResult(room_name, False, f"예외: {exc}")
+    finally:
+        close_all_room_windows()
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

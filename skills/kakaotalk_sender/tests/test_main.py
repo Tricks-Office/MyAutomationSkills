@@ -107,6 +107,37 @@ def test_send_message_to_room_returns_failure_on_frontmost_mismatch() -> None:
     assert "Code" in result.reason
 
 
+def test_send_message_to_room_closes_windows_even_on_early_failure() -> None:
+    """여러 방을 연속 처리할 때 이전 방 창이 남아 있으면 다음 방 검색이 엉뚱한 곳에
+    입력되는 사고가 실제로 재현됐다(ai_news_telegram 연동, 화공97/고대97 검색 실패).
+    성공/실패 어느 경로든 close_all_room_windows가 항상 호출돼야 한다."""
+    with patch("main.activate_kakaotalk_and_open_search", return_value=(0, 0, 10, 10)), patch(
+        "main.focus_and_type_search_query"
+    ), patch("main.find_exact_room_match", return_value=None), patch(
+        "main.close_all_room_windows"
+    ) as mock_close:
+        main.send_message_to_room("없는방", "hi")
+    mock_close.assert_called_once()
+
+
+def test_send_message_to_room_closes_windows_on_success() -> None:
+    match = main.RoomMatch(center_x=1, center_y=1)
+    with patch("main.activate_kakaotalk_and_open_search", return_value=(0, 0, 10, 10)), patch(
+        "main.focus_and_type_search_query"
+    ), patch("main.find_exact_room_match", return_value=match), patch(
+        "main.open_room_and_verify", return_value=True
+    ), patch("main.get_message_input_center", return_value=(1, 1)), patch(
+        "main.paste_message"
+    ), patch("main.verify_pasted_text", return_value=True), patch(
+        "main.get_send_button_center", return_value=(1, 1)
+    ), patch("main.click_send_button"), patch(
+        "main.verify_message_sent", return_value=True
+    ), patch("main.close_all_room_windows") as mock_close:
+        result = main.send_message_to_room("방A", "hi")
+    assert result.success is True
+    mock_close.assert_called_once()
+
+
 def test_is_accessibility_denied_matches_known_markers() -> None:
     assert main._is_accessibility_denied("osascript에 보조 접근이 허용되지 않습니다.")
     assert main._is_accessibility_denied("Not allowed to send Apple events")

@@ -100,11 +100,68 @@ def test_send_telegram_message_raises_when_api_reports_failure(monkeypatch):
         pass
 
 
+class _FakeCompletedProcess:
+    def __init__(self, returncode: int, stderr: str = ""):
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+def test_send_kakaotalk_notification_returns_true_on_success(monkeypatch):
+    captured = {}
+
+    def _fake_run(args, capture_output, text, timeout):
+        captured["args"] = args
+        return _FakeCompletedProcess(returncode=0)
+
+    monkeypatch.setattr(main.subprocess, "run", _fake_run)
+
+    assert main.send_kakaotalk_notification("안녕하세요") is True
+    assert str(main.KAKAOTALK_SENDER_SCRIPT) in captured["args"]
+    for room in main.KAKAOTALK_ROOMS:
+        assert room in captured["args"]
+    assert "--message-file" in captured["args"]
+
+
+def test_send_kakaotalk_notification_returns_false_on_nonzero_exit(monkeypatch):
+    monkeypatch.setattr(
+        main.subprocess, "run", lambda *a, **kw: _FakeCompletedProcess(returncode=1, stderr="방 없음")
+    )
+    assert main.send_kakaotalk_notification("안녕하세요") is False
+
+
+def test_send_kakaotalk_notification_returns_false_and_does_not_raise_on_exception(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise RuntimeError("subprocess 실행 실패")
+
+    monkeypatch.setattr(main.subprocess, "run", _raise)
+    assert main.send_kakaotalk_notification("안녕하세요") is False
+
+
+def test_send_kakaotalk_notification_writes_message_to_temp_file(monkeypatch):
+    written = {}
+
+    def _fake_run(args, capture_output, text, timeout):
+        idx = args.index("--message-file")
+        written["content"] = Path(args[idx + 1]).read_text(encoding="utf-8")
+        written["path"] = args[idx + 1]
+        return _FakeCompletedProcess(returncode=0)
+
+    monkeypatch.setattr(main.subprocess, "run", _fake_run)
+
+    main.send_kakaotalk_notification("멀티라인\n메시지 테스트")
+
+    assert written["content"] == "멀티라인\n메시지 테스트"
+    assert not Path(written["path"]).exists()  # finally 블록에서 삭제됨
+
+
 def _stub_run_env(monkeypatch, tmp_path):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr(main, "REPO_ROOT", tmp_path)
+    # 카카오톡 발송(FR-14)은 실제 subprocess/macOS 자동화를 부르므로 run() 테스트에서는
+    # 항상 stub 처리한다. 카카오톡 관련 동작 자체를 검증하는 테스트는 이 stub을 덮어쓴다.
+    monkeypatch.setattr(main, "send_kakaotalk_notification", lambda message, rooms=main.KAKAOTALK_ROOMS: True)
 
 
 def test_run_returns_success_when_send_succeeds(monkeypatch, tmp_path):

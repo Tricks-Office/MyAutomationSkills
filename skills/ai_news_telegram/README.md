@@ -1,8 +1,9 @@
 # ai_news_telegram
 
 Hacker News에서 AI 관련 스토리를 수집해 규칙 기반으로 "기술"/"비즈니스" 카테고리로
-분류하고, 각 카테고리에서 가장 화제성 있는(Hot) 5건을 골라 한국어로 요약해 텔레그램으로
-발송하는 스킬. `daily`(최근 24시간)/`weekly`(최근 7일) 두 모드를 지원한다.
+분류하고, 각 카테고리에서 가장 화제성 있는(Hot) 5건을 골라 한국어로 요약해 텔레그램(주
+채널)과 카카오톡(보조 채널, `kakaotalk_sender` 연동)으로 발송하는 스킬. `daily`(최근
+24시간)/`weekly`(최근 7일) 두 모드를 지원한다.
 
 - 요구사항 문서: [`docs/PRD.md`](docs/PRD.md), [`docs/SRS.md`](docs/SRS.md)
 - 구현 순서: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)
@@ -10,7 +11,7 @@ Hacker News에서 AI 관련 스토리를 수집해 규칙 기반으로 "기술"/
 ## 구성
 
 - `src/main.py` — 실행 진입점 (HN 검색 → 규칙 기반 필터/분류/점수화 → Claude 랭킹/요약 →
-  텔레그램 발송 → 발송 이력 기록)
+  텔레그램 발송 → 발송 이력 기록 → 카카오톡 발송(보조 채널, best-effort))
 - `tests/test_main.py` — 키워드 필터/카테고리 분류/Hot 점수화/발송 이력 dedup/`run()` 흐름
   스모크 테스트
 - `requirements.txt` — 의존성 (`requests`, `python-dotenv`, `anthropic`)
@@ -27,6 +28,10 @@ Hacker News에서 AI 관련 스토리를 수집해 규칙 기반으로 "기술"/
    요약을 구조화된 JSON으로 받는다(후보가 아예 없으면 이 호출 자체를 건너뛴다).
 5. 결과를 텔레그램 메시지로 포맷팅해 발송하고(후보 부족/0건 안내 문구 포함), 발송된 글의
    ID를 `data/sent_items.db`에 기록해 다음 실행에서 중복 발송을 막는다.
+6. 동일한 메시지를 `kakaotalk_sender`(서브프로세스 호출)로 카카오톡 대화방("금칠",
+   "화공97", "고대97")에도 보낸다. 이 단계는 보조 채널이라 실패해도 완전 실패로 보지
+   않는다 — macOS 자동화가 필요하므로 이 스킬을 macOS가 아닌 환경에서 실행하면 이
+   단계만 실패하고 나머지는 정상 동작한다.
 
 ## 실행 방법
 
@@ -50,9 +55,13 @@ python skills/ai_news_telegram/src/main.py --mode daily   # 또는 --mode weekly
 ## 출력
 
 - 텔레그램 메시지 1건: "📌 AI 기술 Hot 5" + "💼 AI 비즈니스 Hot 5" (후보 부족/0건 안내 포함)
+- 동일한 내용의 카카오톡 메시지(보조 채널, "금칠"/"화공97"/"고대97") — `kakaotalk_sender`의
+  사전 요구사항(macOS, `cliclick`, 로그인된 카카오톡, 손쉬운 사용 권한)이 충족되지 않으면
+  이 부분만 실패하고 로그에만 남는다. 자세한 요구사항은
+  [`skills/kakaotalk_sender/README.md`](../kakaotalk_sender/README.md) 참고
 - `skills/ai_news_telegram/data/sent_items.db`에 이번에 발송한 item_id 기록 (스킬 전용
   로컬 데이터라 저장소 공용 `data/`가 아닌 스킬 폴더 내부에 둔다, 커밋 대상 아님)
-- 실행 로그(검색/필터/후보 풀/랭킹 건수, 발송 결과)
+- 실행 로그(검색/필터/후보 풀/랭킹 건수, 텔레그램·카카오톡 발송 결과)
 
 ## 테스트
 
@@ -61,5 +70,6 @@ pip install pytest
 pytest skills/ai_news_telegram/tests/
 ```
 
-HN Algolia API/Claude API/Telegram Bot API 호출은 모두 mock으로 대체하며, 실제 연동 확인은
-`python src/main.py --mode daily` 수동 실행으로 한다.
+HN Algolia API/Claude API/Telegram Bot API 호출과 `kakaotalk_sender` 서브프로세스 호출은
+모두 mock으로 대체하며, 실제 연동 확인은 `python src/main.py --mode daily` 수동 실행으로
+한다.

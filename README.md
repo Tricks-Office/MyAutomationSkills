@@ -8,7 +8,7 @@
 | 스킬 | 설명 | 상태 |
 |---|---|---|
 | _example_skill | 신규 스킬 작성 시 참고용 골격 예시 (실제 스킬 아님) | 예시 |
-| [ai_news_telegram](skills/ai_news_telegram/) | Hacker News에서 AI 기술/비즈니스 Hot 뉴스를 각 5건씩 골라 한국어로 요약해 텔레그램으로 발송 (daily/weekly) | 완료 |
+| [ai_news_telegram](skills/ai_news_telegram/) | Hacker News에서 AI 기술/비즈니스 Hot 뉴스를 각 5건씩 골라 한국어로 요약해 텔레그램·카카오톡으로 발송 (daily/weekly) | 완료 |
 | [kakaotalk_sender](skills/kakaotalk_sender/) | macOS에 로그인된 카카오톡 데스크톱 앱을 자동화해 지정한 대화방(들)에 텍스트 메시지 전송 | 완료 |
 | [marathon_finder](skills/marathon_finder/) | 한국/중국 남경의 접수중인 5km 이상 도로 레이스를 찾아 DB에 저장하고 텔레그램으로 요약 발송 | 완료 |
 | [marathon_notify_toggle](skills/marathon_notify_toggle/) | 등록된 마라톤 대회의 텔레그램 알림을 이름/id로 특정해 해제하거나 재활성화 | 완료 |

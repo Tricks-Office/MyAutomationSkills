@@ -219,3 +219,21 @@ version: 0.1.0
   키워드를 지원하지 않고(요청 시 400 에러), 프롬프트로 "최대 N개"를 지시해도 모델이 초과
   반환하는 경우가 실제로 있었습니다. 개수 제한이 필요하면 응답을 받은 뒤 코드에서 슬라이싱
   등으로 다시 한번 강제해야 합니다.
+- **다른 스킬을 재사용할 때는 서브프로세스로 호출**: `CLAUDE.md` 3.3(스킬 격리)에 따라 다른
+  스킬의 코드를 import하지 않습니다. `ai_news_telegram`이 완성된 리포트를 `kakaotalk_sender`
+  로도 보내는 연동이 이 패턴의 실제 예시입니다: 메시지를 `tempfile.NamedTemporaryFile`로 파일에
+  써서 `--message-file`로 넘기고, `subprocess.run([sys.executable, "<다른 스킬 경로>/src/main.py",
+  ...])`로 호출합니다. 호출하는 스킬이 더 안정적인 채널(예: 텔레그램 API)에 이미 성공했다면,
+  보조 채널 호출은 예외를 절대 밖으로 내보내지 않고 내부에서 잡아 로그만 남기는 함수로
+  감싸(`try/except`로 감싼 뒤 항상 반환) 보조 채널 실패가 이미 끝난 주 채널 발송이나 `run()`의
+  종료 코드에 영향을 주지 않게 합니다.
+- **macOS 데스크톱 앱을 자동화해야 하면 System Events만으로는 부족할 수 있음**: `kakaotalk_sender`
+  는 macOS 접근성 API의 합성 클릭/키 입력(`osascript`의 `click`, `perform action "AXPress"`,
+  `keystroke ... using {command down}`)이 커스텀 렌더링 UI 요소(전자상거래/메신저 앱처럼
+  네이티브 컨트롤이 아닌 요소)에서 안정적으로 반응하지 않는다는 것을 실사용으로 확인했습니다.
+  실제 HID 이벤트에 가까운 합성 이벤트를 만들어주는 `cliclick`(Homebrew, `brew install
+  cliclick`) 같은 도구가 필요할 수 있습니다. 또한 여러 대상(방/창)을 순차 처리할 때 이전
+  대상의 창을 닫지 않으면, 다음 대상을 위한 화면 좌표 클릭이 접근성 트리 기준으로는 맞는
+  요소를 가리켜도 실제로는 화면에 남아있는 이전 창을 잘못 맞힐 수 있습니다 — 매 대상 처리
+  후 관련 없는 창을 정리하는 단계를 넣어야 합니다. 자세한 내용은
+  [`skills/kakaotalk_sender/docs/SRS.md`](skills/kakaotalk_sender/docs/SRS.md) 8절 참고.

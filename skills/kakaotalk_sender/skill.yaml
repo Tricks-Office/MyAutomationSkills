@@ -1,0 +1,6 @@
+name: kakaotalk_sender
+description: macOS에 설치되어 로그인된 카카오톡 데스크톱 앱을 자동화해 지정한 대화방(들)에 텍스트 메시지를 전송
+entrypoint: src/main.py
+trigger_keywords: [카카오톡 전송, 카톡 보내기, 카카오톡 알림, 대화방 메시지, 카톡 자동 발송, 리포트 카톡 전송]
+requirements: requirements.txt
+version: 0.1.0

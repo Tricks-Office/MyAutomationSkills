@@ -204,6 +204,11 @@ version: 0.1.0
   두되 `run(db_path=...)`로 재정의할 수 있게 열어둡니다. 테스트에서 `tmp_path`를 넘겨 실제
   데이터 파일을 건드리지 않고 검증할 수 있습니다. 여러 스킬이 공유하는 DB(`data/marathon.db`)
   와 스킬 전용 DB(`skills/ai_news_telegram/data/sent_items.db`)가 실제로 이 패턴을 함께 씁니다.
+- **저장소 루트는 `Path(__file__).resolve().parents[3]`으로 계산**: `src/main.py` 기준으로
+  `src` → 스킬 폴더 → `skills` → 저장소 루트 순으로 올라가는 고정 깊이이므로, 저장소 최상위의
+  `.env`나 `data/marathon.db`를 참조할 때 이 값으로 절대 경로를 만듭니다. `src/main.py`를 다른
+  깊이로 옮기면 이 상수가 조용히 잘못된 경로를 가리키게 되니 새 스킬도 표준 폴더 구조(2절)를
+  그대로 유지해야 합니다.
 - **텔레그램 발송은 직접 구현**: Telegram Bot API를 `requests`로 직접 호출하고, 4096자 제한에
   맞춰 4000자 단위로 잘라 순차 발송합니다(`send_telegram_message`). 아직 `shared/`로 뽑혀
   있지 않아 스킬마다 재구현되어 있으니, 텔레그램 발송이 필요한 스킬을 또 추가한다면 이 시점에

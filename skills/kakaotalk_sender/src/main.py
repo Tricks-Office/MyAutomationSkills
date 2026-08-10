@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 KAKAOTALK_PROCESS_NAME = "KakaoTalk"
 KAKAOTALK_MAIN_WINDOW_NAME = "카카오톡"
+KAKAOTALK_APP_PATH = Path("/Applications/KakaoTalk.app")
 
 OSASCRIPT_TIMEOUT_SECONDS = 15
 CLICLICK_TIMEOUT_SECONDS = 10
@@ -36,6 +37,10 @@ ROOM_OPEN_DELAY_SECONDS = 1.0
 PASTE_DELAY_SECONDS = 0.6
 SEND_VERIFY_POLL_INTERVAL_SECONDS = 0.5
 SEND_VERIFY_TIMEOUT_SECONDS = 5
+APP_READY_TIMEOUT_SECONDS = 10
+APP_READY_POLL_INTERVAL_SECONDS = 0.5
+
+_ACCESSIBILITY_DENIED_MARKERS = ("보조 접근", "not allowed", "not permitted")
 
 
 class ArgumentError(ValueError):
@@ -52,6 +57,31 @@ class FrontmostMismatchError(RuntimeError):
     def __init__(self, actual: str):
         super().__init__(f"frontmost 프로세스가 KakaoTalk이 아닙니다: {actual}")
         self.actual = actual
+
+
+class KakaoTalkNotInstalledError(RuntimeError):
+    """KakaoTalk.app이 설치되어 있지 않을 때 발생 (SRS FR-4)."""
+
+
+class KakaoTalkNotLoggedInError(RuntimeError):
+    """앱은 실행되나 타임아웃 내에 메인 창(로그인 상태)이 나타나지 않을 때 발생 (SRS FR-4)."""
+
+
+class AccessibilityPermissionError(RuntimeError):
+    """손쉬운 사용(Accessibility) 권한이 거부됐을 때 발생 (SRS FR-16)."""
+
+    def __init__(self, detail: str):
+        super().__init__(
+            "손쉬운 사용(Accessibility) 권한이 없습니다. 시스템 설정 > 개인정보 보호 및 "
+            "보안 > 손쉬운 사용에서 권한을 부여한 뒤 다시 실행하세요. "
+            f"(원본 오류: {detail})"
+        )
+        self.detail = detail
+
+
+def _is_accessibility_denied(error_message: str) -> bool:
+    lowered = error_message.lower()
+    return any(marker.lower() in lowered for marker in _ACCESSIBILITY_DENIED_MARKERS)
 
 
 @dataclass
@@ -117,6 +147,58 @@ def ensure_kakaotalk_frontmost() -> None:
     frontmost = get_frontmost_process_name()
     if frontmost != KAKAOTALK_PROCESS_NAME:
         raise FrontmostMismatchError(frontmost)
+
+
+def ensure_kakaotalk_installed() -> None:
+    if not KAKAOTALK_APP_PATH.exists():
+        raise KakaoTalkNotInstalledError(
+            f"{KAKAOTALK_APP_PATH}가 존재하지 않습니다. 카카오톡을 설치한 뒤 다시 실행하세요."
+        )
+
+
+def ensure_kakaotalk_ready() -> None:
+    """SRS FR-4/FR-16: 앱을 활성화하고 지정 타임아웃(기본 10초) 내에 메인 창이
+    나타나는지 확인한다. Accessibility 권한 거부는 즉시(재시도 없이) 구분해 실패
+    처리하고, 메인 창이 없는 상태(로그인 안 됨 등)는 타임아웃까지 폴링한다."""
+    ensure_kakaotalk_installed()
+
+    try:
+        get_frontmost_process_name()
+    except RuntimeError as exc:
+        if _is_accessibility_denied(str(exc)):
+            raise AccessibilityPermissionError(str(exc)) from exc
+        raise
+
+    run_applescript(f'tell application "{KAKAOTALK_PROCESS_NAME}" to activate')
+
+    escaped_window_name = _escape_applescript_string(KAKAOTALK_MAIN_WINDOW_NAME)
+    check_window_script = f"""
+tell application "System Events"
+    tell process "{KAKAOTALK_PROCESS_NAME}"
+        try
+            set winEl to window "{escaped_window_name}"
+            return "READY"
+        on error
+            return "NOT_READY"
+        end try
+    end tell
+end tell
+"""
+    deadline = time.monotonic() + APP_READY_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            status = run_applescript(check_window_script)
+        except RuntimeError as exc:
+            if _is_accessibility_denied(str(exc)):
+                raise AccessibilityPermissionError(str(exc)) from exc
+            raise
+        if status == "READY":
+            return
+        time.sleep(APP_READY_POLL_INTERVAL_SECONDS)
+
+    raise KakaoTalkNotLoggedInError(
+        "카카오톡 메인 창을 찾을 수 없습니다. 로그인이 되어 있는지 확인한 뒤 다시 실행하세요."
+    )
 
 
 def set_clipboard(text: str) -> None:
@@ -479,11 +561,18 @@ def run(argv: list[str] | None = None) -> int:
         message = resolve_message(args)
         ensure_platform_macos()
         ensure_cliclick_installed()
-    except ArgumentError as exc:
+    except (ArgumentError, CliclickNotFoundError) as exc:
         logger.error("사전 검증 실패: %s", exc)
         return 1
-    except CliclickNotFoundError as exc:
-        logger.error("사전 검증 실패: %s", exc)
+
+    try:
+        ensure_kakaotalk_ready()
+    except (
+        KakaoTalkNotInstalledError,
+        KakaoTalkNotLoggedInError,
+        AccessibilityPermissionError,
+    ) as exc:
+        logger.error("카카오톡 앱 준비 실패: %s", exc)
         return 1
 
     results = [send_message_to_room(room, message) for room in args.room]

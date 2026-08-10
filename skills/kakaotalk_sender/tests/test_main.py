@@ -105,3 +105,42 @@ def test_send_message_to_room_returns_failure_on_frontmost_mismatch() -> None:
         result = main.send_message_to_room("방A", "hi")
     assert result.success is False
     assert "Code" in result.reason
+
+
+def test_is_accessibility_denied_matches_known_markers() -> None:
+    assert main._is_accessibility_denied("osascript에 보조 접근이 허용되지 않습니다.")
+    assert main._is_accessibility_denied("Not allowed to send Apple events")
+    assert not main._is_accessibility_denied("일반적인 다른 오류입니다")
+
+
+def test_ensure_kakaotalk_installed_raises_when_app_missing() -> None:
+    with patch("main.KAKAOTALK_APP_PATH") as mock_path:
+        mock_path.exists.return_value = False
+        with pytest.raises(main.KakaoTalkNotInstalledError):
+            main.ensure_kakaotalk_installed()
+
+
+def test_ensure_kakaotalk_ready_raises_permission_error_on_frontmost_check() -> None:
+    with patch("main.ensure_kakaotalk_installed"), patch(
+        "main.get_frontmost_process_name",
+        side_effect=RuntimeError("AppleScript 실행 실패: 보조 접근이 허용되지 않습니다."),
+    ):
+        with pytest.raises(main.AccessibilityPermissionError):
+            main.ensure_kakaotalk_ready()
+
+
+def test_ensure_kakaotalk_ready_raises_not_logged_in_after_timeout() -> None:
+    with patch("main.ensure_kakaotalk_installed"), patch(
+        "main.get_frontmost_process_name", return_value="KakaoTalk"
+    ), patch("main.run_applescript", return_value="NOT_READY"), patch(
+        "main.APP_READY_TIMEOUT_SECONDS", 0.05
+    ), patch("main.APP_READY_POLL_INTERVAL_SECONDS", 0.01):
+        with pytest.raises(main.KakaoTalkNotLoggedInError):
+            main.ensure_kakaotalk_ready()
+
+
+def test_ensure_kakaotalk_ready_succeeds_when_window_ready() -> None:
+    with patch("main.ensure_kakaotalk_installed"), patch(
+        "main.get_frontmost_process_name", return_value="KakaoTalk"
+    ), patch("main.run_applescript", return_value="READY"):
+        main.ensure_kakaotalk_ready()  # 예외 없이 반환되면 성공

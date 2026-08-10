@@ -1,8 +1,8 @@
 # Implementation Plan: kakaotalk_sender
 
-- 작성일: 2026-08-10 (Phase 0 완료 반영: 2026-08-11)
+- 작성일: 2026-08-10 (Phase 0~3 완료 반영: 2026-08-11)
 - 작성자: devjan
-- 상태: 진행중 (Phase 0 완료)
+- 상태: 완료 (화면 잠금 상태 검증은 보류 — 4절 참고)
 - 관련 SRS: [`SRS.md`](./SRS.md) — 이 문서는 SRS를 대체하지 않는다. SRS는 "무엇을/왜"
   만드는지, 이 문서는 "어떤 순서로" 만드는지를 다룬다.
 
@@ -27,7 +27,7 @@
 | Phase 0 | 뼈대: UI 자동화 스펙 확인 + 하드코딩 단일 방 end-to-end 전송·검증 성공 | FR-1~FR-3(스파이크), FR-6~FR-12(스파이크로 방식 확정) | 하드코딩 방 이름 하나에 실제 카카오톡 메시지 1건이 전송되고 접근성 트리로 검증까지 성공 | **완료** |
 | Phase 1 | Phase 0에서 확정한 방식을 CLI 골격 + 함수 단위로 정리. 실제 환경 재검증 중 frontmost 안전장치·다중 방 처리·결과 집계까지 앞당겨 포함 | FR-1~FR-3, FR-5~FR-15 | 단일/다중 `--room`으로 정상·존재하지 않는 방·부분 실패 케이스가 SRS 7절대로 실제 환경에서 동작 | **완료** |
 | Phase 2 | 앱 레벨 예외 세분화(설치 안 됨/권한 거부/로그인 안 됨 감지, 활성화 타임아웃 폴링) | FR-4, FR-16 | mock 기반 테스트로 설치 안 됨/권한 거부/타임아웃 케이스 검증 | **완료 (화면 잠금은 미검증으로 보류)** |
-| Phase 3 | `skill.yaml`/README(cliclick 설치 안내 포함)/CHANGELOG | SRS 9절 | 문서 작성 완료, Hermes 등록 준비 완료 | 예정 |
+| Phase 3 | `skill.yaml`/README(cliclick 설치 안내 포함)/CHANGELOG | SRS 9절 | 문서 작성 완료, Hermes 등록 준비 완료 | **완료** |
 
 ## 3. Phase별 상세
 
@@ -134,23 +134,20 @@
 - 커밋 단위:
   1. `kakaotalk_sender: 앱 설치/권한/로그인 상태 구분 + 활성화 타임아웃 폴링 구현`
 
-### Phase 3: 테스트 보강 + 문서화
-- 범위(mock 기반 스모크 테스트 자체는 Phase 1에서 이미 작성함 — 인자 검증, 방 검색 결과
-  분기(성공/미존재), 다중 방 결과 집계/종료 코드 결정 로직):
-  - Phase 2에서 추가된 앱 레벨 예외 분류(로그인 안 됨/권한 거부/화면 잠금) 관련 테스트
-    보강
+### Phase 3: 문서화 — **완료 (2026-08-11)**
+- 범위(mock 기반 스모크 테스트는 Phase 1~2에서 이미 작성 완료 — 인자 검증, 방 검색 결과
+  분기, 앱 상태 분류, 다중 방 결과 집계/종료 코드 결정 로직 총 18개):
   - `skill.yaml` 작성(Hermes 등록용)
-  - `README.md`(사용법, **`cliclick` 설치 안내(Homebrew 필요, Homebrew 자체가 없으면
-    먼저 설치해야 함을 명시)**, 손쉬운 사용 권한 부여 방법, 다른 스킬에서 서브프로세스로
+  - `README.md`(사용법, `cliclick` 설치 안내(Homebrew 필요, Homebrew 자체가 없으면
+    먼저 설치해야 함을 명시), 손쉬운 사용 권한 부여 방법, 다른 스킬에서 서브프로세스로
     재사용하는 방법 예시 포함), `CHANGELOG.md` 작성
 - 이번 Phase에서 제외하는 것: 실제 카카오톡 전송을 포함하는 자동 테스트(환경 의존적이라
-  범위 밖, 수동 검증으로 갈음 — SRS 9절, Phase 0/1에서 이미 수동 검증 완료)
-- 완료 기준(Definition of Done): mock 기반 테스트 통과, `skill.yaml`/README/CHANGELOG
-  작성 완료(`CLAUDE.md` 4절 체크리스트 5~7단계 충족)
+  범위 밖, 수동 검증으로 갈음 — SRS 9절, Phase 0/1/2에서 이미 수동 검증 완료)
+- 완료 기준(Definition of Done): `skill.yaml`/README/CHANGELOG 작성 완료(`CLAUDE.md`
+  4절 체크리스트 5~7단계 충족) — **달성**
 - 커밋 단위:
-  1. `kakaotalk_sender: mock 기반 스모크 테스트 추가`
-  2. `kakaotalk_sender: skill.yaml 작성 (Hermes 등록용)`
-  3. `kakaotalk_sender: README(cliclick 설치 안내 포함)/CHANGELOG 작성`
+  1. `kakaotalk_sender: skill.yaml 작성 (Hermes 등록용)`
+  2. `kakaotalk_sender: README/CHANGELOG 작성`
 
 ## 4. 불확실 요소 / 선(先) 확인 필요 항목
 | 항목 | 불확실한 이유 | 확인 방법 | 결과 |
@@ -187,6 +184,7 @@
   명확한 에러 메시지까지 포함되어 실사용 가능하다. 화면 잠금 상태의 정확한 실패 형태는
   미검증으로 남아 있다(SRS 10절). 자동 테스트는 있으나 `skill.yaml`/README/CHANGELOG가
   없어 Hermes 등록 전 단계.
-- Phase 3까지 완료: SRS 요구사항 전체 충족, Hermes 등록 준비 완료.
+- Phase 3까지 완료(현재 상태): SRS 요구사항 전체 충족(화면 잠금 케이스 제외), Hermes
+  등록 준비 완료.
 - 각 Phase는 다른 스킬 폴더를 참조하지 않으므로, 어느 시점에 중단되어도 기존 스킬(
   `ai_news_telegram` 등)의 동작에는 영향을 주지 않는다.

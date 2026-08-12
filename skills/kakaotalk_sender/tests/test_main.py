@@ -59,9 +59,35 @@ def test_ensure_platform_macos_raises_on_non_darwin() -> None:
 
 
 def test_ensure_cliclick_installed_raises_when_missing() -> None:
-    with patch("main.shutil.which", return_value=None):
+    with patch("main.shutil.which", return_value=None), patch("main.CLICLICK_COMMON_PATHS", []):
         with pytest.raises(main.CliclickNotFoundError):
             main.ensure_cliclick_installed()
+
+
+def test_resolve_cliclick_path_prefers_shutil_which() -> None:
+    with patch("main.shutil.which", return_value="/usr/bin/cliclick"):
+        assert main.resolve_cliclick_path() == "/usr/bin/cliclick"
+
+
+def test_resolve_cliclick_path_falls_back_to_common_paths_when_path_missing() -> None:
+    """cron/launchd 등 비대화형 환경에서는 PATH에 Homebrew 경로가 없어 shutil.which가
+    cliclick을 못 찾는 사고가 실제로 있었다(운영 중 텔레그램은 성공했지만 카카오톡
+    발송만 조용히 실패). PATH 조회가 실패해도 Homebrew의 일반 설치 위치는 찾아야 한다."""
+    with patch("main.shutil.which", return_value=None), patch(
+        "main.CLICLICK_COMMON_PATHS", ["/opt/homebrew/bin/cliclick", "/usr/local/bin/cliclick"]
+    ), patch("main.Path.is_file", lambda self: str(self) == "/opt/homebrew/bin/cliclick"):
+        assert main.resolve_cliclick_path() == "/opt/homebrew/bin/cliclick"
+
+
+def test_resolve_cliclick_path_returns_none_when_nowhere_found() -> None:
+    with patch("main.shutil.which", return_value=None), patch("main.CLICLICK_COMMON_PATHS", []):
+        assert main.resolve_cliclick_path() is None
+
+
+def test_run_cliclick_raises_cliclick_not_found_error_when_unresolved() -> None:
+    with patch("main.resolve_cliclick_path", return_value=None):
+        with pytest.raises(main.CliclickNotFoundError):
+            main.run_cliclick("c:1,1")
 
 
 def test_run_returns_success_when_all_rooms_succeed() -> None:

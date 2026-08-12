@@ -29,6 +29,13 @@ KAKAOTALK_PROCESS_NAME = "KakaoTalk"
 KAKAOTALK_MAIN_WINDOW_NAME = "카카오톡"
 KAKAOTALK_APP_PATH = Path("/Applications/KakaoTalk.app")
 
+# cron/launchd 등 비대화형 환경의 PATH에는 Homebrew 경로가 없을 수 있어(SRS 8절),
+# shutil.which로 못 찾으면 이 경로들도 확인한다.
+CLICLICK_COMMON_PATHS = [
+    "/opt/homebrew/bin/cliclick",  # Apple Silicon Homebrew
+    "/usr/local/bin/cliclick",  # Intel Homebrew
+]
+
 OSASCRIPT_TIMEOUT_SECONDS = 30
 CLICLICK_TIMEOUT_SECONDS = 10
 SEARCH_OPEN_DELAY_SECONDS = 0.5
@@ -114,9 +121,31 @@ def run_applescript(script: str) -> str:
     return result.stdout.strip()
 
 
+def resolve_cliclick_path() -> str | None:
+    """cliclick 실행 파일의 절대 경로를 찾는다.
+
+    cron/launchd 등 비대화형 환경에서는 PATH에 Homebrew 경로(`/opt/homebrew/bin`)가
+    없어 `shutil.which`만으로는 찾지 못하는 사고가 실제로 있었다 — Hermes 크론으로
+    실행된 `ai_news_telegram`이 텔레그램 발송은 성공하고 카카오톡 발송만 매번 조용히
+    실패해, 실제 크론 환경의 PATH를 그대로 재현해보니 `cliclick`을 못 찾는 것으로
+    확인됐다(SRS 8절). `PATH`에 없으면 Homebrew의 일반적인 설치 위치도 확인한다."""
+    found = shutil.which("cliclick")
+    if found:
+        return found
+    for candidate in CLICLICK_COMMON_PATHS:
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
 def run_cliclick(*commands: str) -> None:
+    cliclick_path = resolve_cliclick_path()
+    if cliclick_path is None:
+        raise CliclickNotFoundError(
+            "cliclick이 설치되어 있지 않습니다. 'brew install cliclick'으로 설치한 뒤 다시 실행하세요."
+        )
     result = subprocess.run(
-        ["cliclick", *commands],
+        [cliclick_path, *commands],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -132,7 +161,7 @@ def ensure_platform_macos() -> None:
 
 
 def ensure_cliclick_installed() -> None:
-    if shutil.which("cliclick") is None:
+    if resolve_cliclick_path() is None:
         raise CliclickNotFoundError(
             "cliclick이 설치되어 있지 않습니다. 'brew install cliclick'으로 설치한 뒤 다시 실행하세요."
         )

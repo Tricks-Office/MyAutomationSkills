@@ -178,7 +178,13 @@ Hacker News에서 AI 관련 스토리를 수집해 규칙 기반으로 "기술"/
 - 카카오톡 발송은 재시도하지 않으며(FR-15), `kakaotalk_sender` 자체의 제약사항(macOS
   전용, 화면 잠금 상태 미검증 등, `skills/kakaotalk_sender/docs/SRS.md` 10절)을 그대로
   물려받는다.
-- **알려진 문제(미해결, `kakaotalk_sender` 0.1.1 기준)**: 실제 리포트 길이(약 1,800자)
+- **해결된 운영 장애(2026-08-12)**: Hermes 크론 정기 실행에서 텔레그램은 성공했지만
+  카카오톡 발송이 전혀 되지 않은 사고가 있었다. 원인은 `kakaotalk_sender`가 cron/launchd
+  환경의 PATH에서 `cliclick`을 찾지 못해 즉시 실패한 것이었고(`kakaotalk_sender`
+  CHANGELOG 0.1.2), `send_kakaotalk_notification`이 best-effort로 실패를 삼키는 설계라
+  (FR-15) 원인 파악이 어려웠다. `kakaotalk_sender` 0.1.2에서 PATH에 의존하지 않고
+  `cliclick`을 찾도록 수정해 해결을 확인했다.
+- **알려진 문제(미해결, `kakaotalk_sender` 0.1.1부터)**: 실제 리포트 길이(약 1,800자)
   메시지는 카카오톡 전송 자체는 성공하지만, `kakaotalk_sender`의 전송 검증 단계가
   매번 타임아웃으로 실패를 보고하는 현상이 실사용에서 확인됐다(`kakaotalk_sender`
   CHANGELOG 0.1.1 참고). 즉 이 스킬의 실행 로그에 "카카오톡 발송 실패"가 남아도 실제

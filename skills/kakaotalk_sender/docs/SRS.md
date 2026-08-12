@@ -41,7 +41,7 @@ Events의 `click`, `perform action "AXPress"`, `keystroke`)에 안정적으로 �
 |---|---|---|
 | FR-1 | CLI 인자로 `--room`(반복 가능, 1개 이상 필수)과 `--message`(문자열) 또는 `--message-file`(파일 경로) 중 정확히 하나를 받는다. `--room`이 없거나, `--message`/`--message-file`이 둘 다 없거나 둘 다 있으면 실행 시작 전 실패 처리한다 | 필수 |
 | FR-2 | 실행 시작 시 `sys.platform`이 macOS(`darwin`)가 아니면 즉시 실패 처리한다 | 필수 |
-| FR-3 | `cliclick`이 설치되어 있는지(`shutil.which`) 실행 시작 전 확인한다. 없으면 설치 방법(Homebrew) 안내와 함께 실패 처리한다 | 필수 |
+| FR-3 | `cliclick`의 실행 파일 경로를 찾아(`shutil.which`, 실패 시 Homebrew의 일반 설치 위치인 `/opt/homebrew/bin/cliclick`, `/usr/local/bin/cliclick`도 확인) 실행 시작 전 확인하고, 이후 `cliclick` 호출에도 이 절대 경로를 사용한다. 어디서도 못 찾으면 설치 방법 안내와 함께 실패 처리한다 — cron/launchd 등 비대화형 환경은 PATH에 Homebrew 경로가 없어 `shutil.which`만으로는 찾지 못하는 사고가 실제로 있었다(8절) | 필수 |
 | FR-4 | KakaoTalk.app을 활성화(activate)한 뒤, 지정 타임아웃(기본 10초) 내에 메인 창(채팅방 목록)이 접근성 트리에 나타나는지 확인한다. 나타나지 않으면(앱 미설치/로그인 안 됨/응답 없음) 완전 실패로 처리한다 | 필수 |
 | FR-5 | **frontmost 안전장치(2절)**: 마우스 클릭 또는 키 입력을 보내기 직전마다, macOS 시스템 전체의 frontmost 프로세스 이름이 정확히 "KakaoTalk"인지 확인한다. 아니면 그 즉시(재시도 없이) 실패로 처리한다 — 이 확인은 방 검색·방 열기·붙여넣기·전송 등 상호작용이 있는 모든 단계 직전에 반복 수행한다 | 필수 |
 | FR-6 | `--room`으로 지정된 각 대화방에 대해 순차적으로(동시 실행 없이) 처리한다: 검색창(AXTextField)이 이미 열려 있는지 먼저 확인하고, 없으면 "검색" 버튼을 실클릭으로 눌러 연다 — `Cmd+F`와 "검색" 버튼 모두 이미 열려 있는 상태에서 다시 실행하면 오히려 닫히는 **토글**로 동작함이 Phase 1에서 확인되어, 먼저 상태를 확인한 뒤 필요할 때만 클릭한다. 검색창을 실클릭으로 포커스한 뒤, 방 이름을 클립보드에 설정하고 cliclick으로 전체선택(`kd:cmd t:a ku:cmd`)+붙여넣기(`kd:cmd t:v ku:cmd`)해 입력한다 — 당초 System Events `keystroke`로 "전체선택 후 타이핑"을 시도했으나 select-all이 간헐적으로 실패해 이전 검색어에 새 검색어가 이어붙거나 일부 한글 자모가 깨지는 문제가 Phase 1 실제 검증에서 재현되어 채택하지 않는다. 검색 결과에서 이름이 정확히 일치하는 행을 찾아, 결과가 0개이거나 2개 이상이면 그 방은 실패로 기록하고 다음 방으로 진행한다(다른 방을 임의로 추측해 열지 않는다) | 필수 |
@@ -223,6 +223,19 @@ Events의 `click`, `perform action "AXPress"`, `keystroke`)에 안정적으로 �
     타임아웃 부족이 아니라, 카카오톡이 긴 메시지를 대화 내역 접근성 값에서
     말줄임(…)으로 잘라 노출하는 것으로 보이는 정황도 확인해(493자에서 잘린 사례),
     근본 원인이 타임아웃이 아닐 가능성이 있다.
+- **Hermes 크론 정기 실행(2026-08-12) 중 발견/해결한 문제**: `ai_news_telegram_daily` 크론
+  작업(매일 07:00)이 실행됐을 때 텔레그램 발송은 성공했지만 카카오톡 메시지가 전혀
+  도착하지 않았다. `send_kakaotalk_notification`이 best-effort로 설계돼(SRS FR-15) 실패를
+  삼키고 `ai_news_telegram`은 정상 종료된 것처럼 보여 원인 파악이 어려웠다. Hermes의 실제
+  크론 실행 환경(LaunchAgent) PATH를 그대로 재현해 실행해보니 `ensure_cliclick_installed`가
+  즉시 실패함을 확인했다 — **cron/launchd처럼 셸 프로파일을 거치지 않는 비대화형 환경의
+  PATH에는 Homebrew 경로(`/opt/homebrew/bin`)가 없어 `shutil.which("cliclick")`이 항상
+  실패**했다(대화형 터미널에서는 매번 `eval "$(brew shellenv)"`를 직접 실행해왔기 때문에
+  이 문제가 지금까지 드러나지 않았다). `resolve_cliclick_path()`로 `shutil.which` 실패 시
+  Homebrew의 일반 설치 위치(`/opt/homebrew/bin/cliclick`, `/usr/local/bin/cliclick`)도
+  확인하도록 수정했고(FR-3), 이후 `cliclick` 호출 자체도 이 절대 경로를 쓰도록 바꿔
+  PATH에 더 이상 의존하지 않게 했다. 크론 환경의 PATH를 그대로 재현한 실행으로 해결을
+  확인했다.
 
 ## 9. 테스트 시나리오
 | 시나리오 | 입력 | 기대 결과 |

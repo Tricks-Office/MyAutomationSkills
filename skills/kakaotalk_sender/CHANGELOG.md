@@ -1,5 +1,16 @@
 # Changelog — kakaotalk_sender
 
+## [0.1.2]
+- **버그 수정(운영 장애)**: Hermes 크론으로 정기 실행(매일 07:00)됐을 때 텔레그램 발송은
+  성공했지만 카카오톡 발송이 매번 조용히 실패하던 문제의 원인을 찾아 해결. cron/launchd
+  같은 비대화형 환경은 PATH에 Homebrew 경로(`/opt/homebrew/bin`)가 없어
+  `shutil.which("cliclick")`이 항상 실패했다 — 대화형 터미널 테스트에서는 매번
+  `eval "$(brew shellenv)")`를 직접 실행해왔기 때문에 지금까지 드러나지 않았다
+- `resolve_cliclick_path()`를 추가해 `shutil.which` 실패 시 Homebrew의 일반 설치 위치
+  (`/opt/homebrew/bin/cliclick`, `/usr/local/bin/cliclick`)도 확인하고, 이후 `cliclick`
+  호출도 이 절대 경로를 사용하도록 변경 — 호출 환경의 PATH 설정에 더 이상 의존하지 않음
+- 실제 크론 실행 환경의 PATH를 그대로 재현해 문제 재현 및 해결 확인, 스모크 테스트 4개 추가
+
 ## [0.1.1]
 - `ai_news_telegram` 연동 첫 실사용 중, 여러 방을 순차 처리할 때 이전 방의 대화창을
   닫지 않아 다음 방 검색어가 그 창의 메시지 입력창에 잘못 입력되는 사고 확인 후 수정 —

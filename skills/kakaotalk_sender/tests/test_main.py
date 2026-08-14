@@ -64,6 +64,61 @@ def test_ensure_cliclick_installed_raises_when_missing() -> None:
             main.ensure_cliclick_installed()
 
 
+class _FakeIoregResult:
+    def __init__(self, stdout: str):
+        self.stdout = stdout
+
+
+def test_is_clamshell_closed_returns_true_when_yes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *a, **kw: _FakeIoregResult('  |   "AppleClamshellState" = Yes\n'),
+    )
+    assert main.is_clamshell_closed() is True
+
+
+def test_is_clamshell_closed_returns_false_when_no(monkeypatch) -> None:
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *a, **kw: _FakeIoregResult('  |   "AppleClamshellState" = No\n'),
+    )
+    assert main.is_clamshell_closed() is False
+
+
+def test_is_clamshell_closed_returns_none_when_property_absent(monkeypatch) -> None:
+    """데스크톱 Mac 등 이 속성이 없는 환경에서는 판단 불가로 처리하고 자동화를
+    막지 않는다."""
+    monkeypatch.setattr(main.subprocess, "run", lambda *a, **kw: _FakeIoregResult(""))
+    assert main.is_clamshell_closed() is None
+
+
+def test_is_clamshell_closed_returns_none_on_subprocess_error(monkeypatch) -> None:
+    def _raise(*args, **kwargs):
+        raise FileNotFoundError("ioreg not found")
+
+    monkeypatch.setattr(main.subprocess, "run", _raise)
+    assert main.is_clamshell_closed() is None
+
+
+def test_ensure_clamshell_open_raises_when_closed() -> None:
+    """Hermes 크론으로 새벽에 자동 실행됐을 때, 노트북 뚜껑이 닫혀 있어 GUI 자동화가
+    근본적으로 불가능한 상태에서 텔레그램은 성공하고 카카오톡만 조용히 실패하는
+    사고가 실제로 재현됐다(system log의 clamshell 상태 변화로 확인). 이제는 이 상태를
+    조기에 감지해 명확한 이유로 즉시 실패한다."""
+    with patch("main.is_clamshell_closed", return_value=True):
+        with pytest.raises(main.ClamshellClosedError):
+            main.ensure_clamshell_open()
+
+
+def test_ensure_clamshell_open_does_not_raise_when_open_or_unknown() -> None:
+    with patch("main.is_clamshell_closed", return_value=False):
+        main.ensure_clamshell_open()
+    with patch("main.is_clamshell_closed", return_value=None):
+        main.ensure_clamshell_open()
+
+
 def test_resolve_cliclick_path_prefers_shutil_which() -> None:
     with patch("main.shutil.which", return_value="/usr/bin/cliclick"):
         assert main.resolve_cliclick_path() == "/usr/bin/cliclick"
@@ -92,6 +147,8 @@ def test_run_cliclick_raises_cliclick_not_found_error_when_unresolved() -> None:
 
 def test_run_returns_success_when_all_rooms_succeed() -> None:
     with patch("main.ensure_platform_macos"), patch("main.ensure_cliclick_installed"), patch(
+        "main.ensure_clamshell_open"
+    ), patch("main.ensure_kakaotalk_ready"), patch(
         "main.send_message_to_room",
         side_effect=[
             main.RoomSendResult("방A", True),
@@ -104,6 +161,8 @@ def test_run_returns_success_when_all_rooms_succeed() -> None:
 
 def test_run_returns_failure_when_any_room_fails() -> None:
     with patch("main.ensure_platform_macos"), patch("main.ensure_cliclick_installed"), patch(
+        "main.ensure_clamshell_open"
+    ), patch("main.ensure_kakaotalk_ready"), patch(
         "main.send_message_to_room",
         side_effect=[
             main.RoomSendResult("방A", True),

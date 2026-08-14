@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import logging
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -91,6 +92,17 @@ class AccessibilityPermissionError(RuntimeError):
         self.detail = detail
 
 
+class ClamshellClosedError(RuntimeError):
+    """맥북 뚜껑이 닫혀 있어 GUI 자동화가 불가능할 때 발생 (SRS FR-18)."""
+
+    def __init__(self):
+        super().__init__(
+            "맥북 뚜껑(clamshell)이 닫혀 있습니다. 외부 모니터 없이 뚜껑이 닫히면 "
+            "디스플레이/윈도우 서버가 비활성화돼 화면 자동화가 근본적으로 불가능합니다. "
+            "뚜껑을 열어두거나 외부 모니터를 연결한 채로 실행하세요."
+        )
+
+
 def _is_accessibility_denied(error_message: str) -> bool:
     lowered = error_message.lower()
     return any(marker.lower() in lowered for marker in _ACCESSIBILITY_DENIED_MARKERS)
@@ -165,6 +177,36 @@ def ensure_cliclick_installed() -> None:
         raise CliclickNotFoundError(
             "cliclick이 설치되어 있지 않습니다. 'brew install cliclick'으로 설치한 뒤 다시 실행하세요."
         )
+
+
+def is_clamshell_closed() -> bool | None:
+    """맥북 뚜껑(clamshell)이 닫혀 있는지 `ioreg`의 `AppleClamshellState` 속성으로
+    확인한다. 데스크톱 Mac 등 이 속성이 없는 환경에서는 None을 반환한다(판단 불가 —
+    자동화를 막지 않고 그대로 진행).
+
+    Hermes 크론으로 매일 새벽 자동 실행됐을 때, 텔레그램은 성공했지만 카카오톡만
+    계속 실패하는 사고가 있었다. `log show`로 실제 실행 시각의 시스템 로그를 확인해
+    보니 그 시간대에 뚜껑이 계속 닫혀 있었다 — 외부 모니터가 없는 노트북은 뚜껑이
+    닫히면 디스플레이/윈도우 서버가 꺼져 GUI 자동화가 근본적으로 불가능하다. 이전에는
+    이 상태에서 각 단계가 개별적으로 타임아웃되며 조용히 실패해 원인 파악이 어려웠다."""
+    try:
+        result = subprocess.run(
+            ["ioreg", "-r", "-k", "AppleClamshellState", "-d", "4"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return None
+    match = re.search(r'"AppleClamshellState"\s*=\s*(Yes|No)', result.stdout)
+    if not match:
+        return None
+    return match.group(1) == "Yes"
+
+
+def ensure_clamshell_open() -> None:
+    if is_clamshell_closed():
+        raise ClamshellClosedError()
 
 
 def get_frontmost_process_name() -> str:
@@ -627,7 +669,8 @@ def run(argv: list[str] | None = None) -> int:
         message = resolve_message(args)
         ensure_platform_macos()
         ensure_cliclick_installed()
-    except (ArgumentError, CliclickNotFoundError) as exc:
+        ensure_clamshell_open()
+    except (ArgumentError, CliclickNotFoundError, ClamshellClosedError) as exc:
         logger.error("사전 검증 실패: %s", exc)
         return 1
 

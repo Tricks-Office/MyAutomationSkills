@@ -35,6 +35,28 @@ Accessibility API + 실제 클릭/키 이벤트)으로 조작한다.
    ```
 3. **손쉬운 사용(Accessibility) 권한**을 이 스킬을 실행하는 터미널/프로세스에 부여해야
    한다: 시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용에서 추가/활성화.
+4. **[무인/예약 실행 시 필수] 디스플레이가 절전·화면 잠금에 들어가지 않아야 한다.**
+   GUI 자동화 특성상 디스플레이가 꺼져 있으면 어떤 단계에서든 실패한다(자세한 진단은
+   `docs/SRS.md` 8절/10절 참고). 새벽처럼 아무도 컴퓨터를 조작하지 않는 시간에 실행하려면
+   아래 두 가지가 모두 필요하다:
+   - **뚜껑을 닫아둘 경우, 외부 모니터(또는 HDMI 더미 플러그)를 연결하고 전원 어댑터를
+     꽂아둔다** — 클램쉘 모드로 인식되어 하드웨어 레벨 디스플레이 강제 종료를 피한다.
+   - **로그인 세션 동안 `caffeinate`를 상시 실행해 유휴 시간 기반 절전/화면 잠금 자체를
+     막는다** — 뚜껑이 열려 있거나 외부 모니터가 연결돼 있어도 유휴 시간이 지나면 별도로
+     절전·잠금이 걸리기 때문에 반드시 필요하다. `~/Library/LaunchAgents/`에 아래 내용으로
+     LaunchAgent를 등록해두면 로그인할 때마다 자동으로 실행된다(머신 전역 설정이라 이
+     저장소에는 포함하지 않는다):
+     ```xml
+     <key>ProgramArguments</key>
+     <array>
+       <string>/usr/bin/caffeinate</string>
+       <string>-d</string><string>-i</string><string>-s</string><string>-u</string>
+     </array>
+     <key>RunAtLoad</key><true/>
+     <key>KeepAlive</key><true/>
+     ```
+     `launchctl bootstrap gui/$(id -u) <plist 경로>`로 등록하고, `pmset -g assertions`에서
+     `caffeinate` 프로세스가 절전 방지 assertion을 잡고 있는지 확인한다.
 
 ## 실행 방법
 

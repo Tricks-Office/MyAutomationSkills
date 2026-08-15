@@ -237,3 +237,16 @@ version: 0.1.0
   요소를 가리켜도 실제로는 화면에 남아있는 이전 창을 잘못 맞힐 수 있습니다 — 매 대상 처리
   후 관련 없는 창을 정리하는 단계를 넣어야 합니다. 자세한 내용은
   [`skills/kakaotalk_sender/docs/SRS.md`](skills/kakaotalk_sender/docs/SRS.md) 8절 참고.
+- **macOS GUI 자동화를 Hermes 크론(무인 실행)으로 돌리려면 디스플레이가 켜져 있어야
+  합니다**: `kakaotalk_sender`가 새벽 크론에서 매번 조용히 실패한 근본 원인은 코드가
+  아니라 실행 환경이었습니다 — 노트북 뚜껑이 닫히면 외부 모니터 없이는 하드웨어가
+  디스플레이를 강제로 끄고, 뚜껑이 열려 있어도 유휴 시간이 지나면 디스플레이 절전과
+  화면 잠금이 별도로 걸립니다. 둘 다 macOS 접근성 API 기반 자동화를 근본적으로
+  막습니다(네트워크 API 호출은 이 상태에서도 동작하므로 텔레그램 발송 같은 단계는
+  영향받지 않습니다). 특히 **화면 잠금이 이미 걸린 뒤에는 실행 직전에 "깨우는" 명령으로
+  풀 수 없습니다**(암호 자동 입력 불가) — 로그인 세션 동안 `caffeinate -d -i -s -u`를
+  상시 실행하는 launchd LaunchAgent로 유휴 절전/잠금 자체를 예방해야 합니다. 이런
+  LaunchAgent는 스킬 코드가 아니라 머신 설정이라 이 저장소에는 포함하지 않고
+  `~/Library/LaunchAgents/`에 따로 둡니다. 새 GUI 자동화 스킬을 무인 실행할 계획이면
+  이 조건을 먼저 확인하세요. 진단 과정과 실측 결과는
+  [`skills/kakaotalk_sender/docs/SRS.md`](skills/kakaotalk_sender/docs/SRS.md) 8절/10절 참고.

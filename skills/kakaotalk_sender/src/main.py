@@ -180,15 +180,25 @@ def ensure_cliclick_installed() -> None:
 
 
 def is_clamshell_closed() -> bool | None:
-    """맥북 뚜껑(clamshell)이 닫혀 있는지 `ioreg`의 `AppleClamshellState` 속성으로
-    확인한다. 데스크톱 Mac 등 이 속성이 없는 환경에서는 None을 반환한다(판단 불가 —
-    자동화를 막지 않고 그대로 진행).
+    """맥북 뚜껑(clamshell)이 닫혀 있어 GUI 자동화가 실제로 불가능한 상태인지 확인한다.
+    데스크톱 Mac 등 관련 속성이 없는 환경에서는 None을 반환한다(판단 불가 — 자동화를
+    막지 않고 그대로 진행).
 
     Hermes 크론으로 매일 새벽 자동 실행됐을 때, 텔레그램은 성공했지만 카카오톡만
     계속 실패하는 사고가 있었다. `log show`로 실제 실행 시각의 시스템 로그를 확인해
     보니 그 시간대에 뚜껑이 계속 닫혀 있었다 — 외부 모니터가 없는 노트북은 뚜껑이
     닫히면 디스플레이/윈도우 서버가 꺼져 GUI 자동화가 근본적으로 불가능하다. 이전에는
-    이 상태에서 각 단계가 개별적으로 타임아웃되며 조용히 실패해 원인 파악이 어려웠다."""
+    이 상태에서 각 단계가 개별적으로 타임아웃되며 조용히 실패해 원인 파악이 어려웠다.
+
+    2026-08-16 재발 조사: 외부 모니터를 연결해뒀는데도 여전히 실패했다. `AppleClamshellState`
+    만으로는 "뚜껑이 물리적으로 닫혀 있는지"만 알 수 있을 뿐, 외부 모니터+전원 연결로
+    macOS가 실제로는 잠들지 않는 클램쉘 모드인지는 구분하지 못한다 — 그 시간대 로그에는
+    `AppleClamshellState = Yes`와 함께 `inFullWake: YES`(디스플레이가 실제로 켜져 있음)가
+    같이 찍혀 있었는데도 이 함수가 무조건 뚜껑 닫힘으로 판정해 어떤 화면 조작(osascript/
+    cliclick)도 시도하기 전에 조기 실패했다. 같은 `ioreg` 출력에 있는
+    `AppleClamshellCausesSleep`은 macOS 자신이 "현재 조건(외부 디스플레이+전원 연결 등)에서
+    뚜껑을 닫아도 실제로 잠들지 않는다"고 판단했는지를 그대로 알려주는 속성이라, 외부
+    모니터 유무를 별도로 조사하는 것보다 이 값을 그대로 신뢰하는 편이 더 정확하다."""
     try:
         result = subprocess.run(
             ["ioreg", "-r", "-k", "AppleClamshellState", "-d", "4"],
@@ -198,10 +208,15 @@ def is_clamshell_closed() -> bool | None:
         )
     except Exception:
         return None
-    match = re.search(r'"AppleClamshellState"\s*=\s*(Yes|No)', result.stdout)
-    if not match:
+    state_match = re.search(r'"AppleClamshellState"\s*=\s*(Yes|No)', result.stdout)
+    if not state_match:
         return None
-    return match.group(1) == "Yes"
+    if state_match.group(1) != "Yes":
+        return False
+    causes_sleep_match = re.search(r'"AppleClamshellCausesSleep"\s*=\s*(Yes|No)', result.stdout)
+    if causes_sleep_match and causes_sleep_match.group(1) == "No":
+        return False
+    return True
 
 
 def ensure_clamshell_open() -> None:

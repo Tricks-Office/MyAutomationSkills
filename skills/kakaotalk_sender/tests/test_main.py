@@ -87,6 +87,34 @@ def test_is_clamshell_closed_returns_false_when_no(monkeypatch) -> None:
     assert main.is_clamshell_closed() is False
 
 
+def test_is_clamshell_closed_returns_false_when_clamshell_mode_prevents_sleep(monkeypatch) -> None:
+    """외부 모니터+전원 연결로 macOS가 뚜껑을 닫아도 잠들지 않는다고 판단한 경우
+    (`AppleClamshellCausesSleep` = No) — 실제로 2026-08-16 아침 이 상태에서 뚜껑이
+    닫혀 있다는 이유만으로 조기 실패해 카카오톡 발송이 누락됐다. 디스플레이가 실제로
+    켜져 있으므로 자동화를 막지 않아야 한다."""
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *a, **kw: _FakeIoregResult(
+            '  |   "AppleClamshellCausesSleep" = No\n'
+            '  |   "AppleClamshellState" = Yes\n'
+        ),
+    )
+    assert main.is_clamshell_closed() is False
+
+
+def test_is_clamshell_closed_returns_true_when_clamshell_would_sleep(monkeypatch) -> None:
+    monkeypatch.setattr(
+        main.subprocess,
+        "run",
+        lambda *a, **kw: _FakeIoregResult(
+            '  |   "AppleClamshellCausesSleep" = Yes\n'
+            '  |   "AppleClamshellState" = Yes\n'
+        ),
+    )
+    assert main.is_clamshell_closed() is True
+
+
 def test_is_clamshell_closed_returns_none_when_property_absent(monkeypatch) -> None:
     """데스크톱 Mac 등 이 속성이 없는 환경에서는 판단 불가로 처리하고 자동화를
     막지 않는다."""

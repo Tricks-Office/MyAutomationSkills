@@ -288,3 +288,67 @@ def test_ensure_kakaotalk_ready_succeeds_when_window_ready() -> None:
         "main.get_frontmost_process_name", return_value="KakaoTalk"
     ), patch("main.run_applescript", return_value="READY"):
         main.ensure_kakaotalk_ready()  # 예외 없이 반환되면 성공
+
+
+def test_log_file_is_configured_and_persists_across_exit_codes() -> None:
+    """2026-08-16/17 사고: 방 일부만 실패해도 상위 프로세스(ai_news_telegram)는
+    exit 0으로 끝나 Hermes 크론이 stderr를 버리는 바람에 시스템 로그로 정황만
+    재구성해야 했다. exit 코드와 무관하게 항상 남는 파일 로그가 있어야 한다."""
+    assert main._LOG_FILE_PATH.parent.is_dir()
+    handler_classes = [type(h) for h in main._root_logger.handlers]
+    assert main.logging.handlers.RotatingFileHandler in handler_classes
+
+
+def test_list_stray_room_windows_parses_comma_separated_names() -> None:
+    with patch("main.run_applescript", return_value="방A, 방B"):
+        assert main._list_stray_room_windows() == ["방A", "방B"]
+
+
+def test_list_stray_room_windows_returns_empty_list_when_none_remain() -> None:
+    with patch("main.run_applescript", return_value=""):
+        assert main._list_stray_room_windows() == []
+
+
+def test_list_stray_room_windows_returns_empty_list_on_applescript_failure() -> None:
+    """조회 자체가 실패해도 '창이 없다'고 확정하지 않되, 호출부(재시도 루프)가
+    무한정 재시도하지 않도록 빈 목록으로 취급한다."""
+    with patch("main.run_applescript", side_effect=RuntimeError("boom")):
+        assert main._list_stray_room_windows() == []
+
+
+def test_close_all_room_windows_succeeds_without_retry() -> None:
+    with patch("main.run_applescript", return_value="") as mock_run, patch(
+        "main._list_stray_room_windows", return_value=[]
+    ) as mock_list, patch("main.logger") as mock_logger:
+        main.close_all_room_windows()
+    assert mock_run.call_count == 1
+    assert mock_list.call_count == 1
+    mock_logger.error.assert_not_called()
+
+
+def test_close_all_room_windows_retries_then_succeeds(monkeypatch) -> None:
+    """2026-08-17 사고 재현: 창 닫기 AppleScript가 타임아웃으로 죽어 일부 창이
+    남아도, 조용히 다음 방으로 넘어가지 않고 재시도해서 실제로 다 닫혔는지
+    확인한다."""
+    monkeypatch.setattr(main.time, "sleep", lambda *_: None)
+    with patch("main.run_applescript", return_value="") as mock_run, patch(
+        "main._list_stray_room_windows", side_effect=[["방A"], []]
+    ) as mock_list, patch("main.logger") as mock_logger:
+        main.close_all_room_windows()
+    assert mock_run.call_count == 2
+    assert mock_list.call_count == 2
+    mock_logger.error.assert_not_called()
+    mock_logger.warning.assert_called()
+
+
+def test_close_all_room_windows_logs_error_when_stray_windows_persist(monkeypatch) -> None:
+    """재시도를 다 써도 창이 남아 있으면, 다음 방 검색이 엉뚱한 창을 맞힐 수
+    있다는 사실을 조용히 넘기지 않고 명확한 에러 로그로 남긴다."""
+    monkeypatch.setattr(main.time, "sleep", lambda *_: None)
+    with patch("main.run_applescript", return_value="") as mock_run, patch(
+        "main._list_stray_room_windows", return_value=["방A"]
+    ) as mock_list, patch("main.logger") as mock_logger:
+        main.close_all_room_windows()
+    assert mock_run.call_count == main.CLOSE_WINDOWS_MAX_ATTEMPTS
+    assert mock_list.call_count == main.CLOSE_WINDOWS_MAX_ATTEMPTS + 1
+    mock_logger.error.assert_called_once()

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import logging.handlers
 import platform
 import re
 import shutil
@@ -23,7 +24,31 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# ai_news_telegram이 이 스킬을 best-effort(FR-15)로 서브프로세스 호출할 때, 이 프로세스가
+# exit 0으로 끝나면(방 일부만 실패해도 상위 프로세스 자체는 계속 진행) Hermes 크론이
+# stderr를 통째로 버려 로그를 볼 방법이 없었다(2026-08-16/17 두 차례 사고에서 시스템
+# 로그(`log show`)로 정황만 재구성해야 했다). exit 코드와 무관하게 항상 남는 파일 로그를
+# 추가해 다음부터는 이 파일만 보면 원인을 바로 알 수 있게 한다.
+_LOG_DIR = Path(__file__).resolve().parents[1] / "data"
+_LOG_FILE_PATH = _LOG_DIR / "kakaotalk_sender.log"
+
+_log_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+_root_logger = logging.getLogger()
+_root_logger.setLevel(logging.INFO)
+_stream_handler = logging.StreamHandler()
+_stream_handler.setFormatter(_log_formatter)
+_root_logger.addHandler(_stream_handler)
+try:
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _file_handler = logging.handlers.RotatingFileHandler(
+        _LOG_FILE_PATH, maxBytes=2_000_000, backupCount=3, encoding="utf-8"
+    )
+    _file_handler.setFormatter(_log_formatter)
+    _root_logger.addHandler(_file_handler)
+except OSError:
+    # data/ 디렉터리를 만들 수 없는 극단적인 환경에서도 최소한 stderr 로그는 계속 남아야 한다.
+    pass
+
 logger = logging.getLogger(__name__)
 
 KAKAOTALK_PROCESS_NAME = "KakaoTalk"
@@ -52,6 +77,13 @@ SEND_VERIFY_POLL_INTERVAL_SECONDS = 0.5
 SEND_VERIFY_TIMEOUT_SECONDS = 35
 APP_READY_TIMEOUT_SECONDS = 10
 APP_READY_POLL_INTERVAL_SECONDS = 0.5
+# close_all_room_windows()의 AppleScript 호출 자체가 OSASCRIPT_TIMEOUT_SECONDS를
+# 넘겨 강제 종료되면(2026-08-17 실사용에서 재현, 8절) 창 닫기 반복문이 중간에 끊겨
+# 일부 창이 남을 수 있다 — 재시도로 만회할 여지를 준다. 재시도 사이의 지연은 직전
+# 시도가 타임아웃으로 끝났다면 카카오톡 UI가 여전히 바쁜 상태일 가능성이 높아, 바로
+# 재시도하기보다 잠깐 여유를 준다.
+CLOSE_WINDOWS_MAX_ATTEMPTS = 2
+CLOSE_WINDOWS_RETRY_DELAY_SECONDS = 1.0
 
 _ACCESSIBILITY_DENIED_MARKERS = ("보조 접근", "not allowed", "not permitted")
 
@@ -594,6 +626,33 @@ def verify_message_sent(room_name: str, expected_text: str) -> bool:
     return False
 
 
+def _list_stray_room_windows() -> list[str]:
+    """메인 목록 창을 제외하고 현재 열려 있는 카카오톡 창 이름 목록을 반환한다.
+    조회 자체가 실패하면(App이 이미 안 떠 있는 등) 판단 불가로 보고 빈 목록을
+    반환한다 — 조회 실패를 "창이 없다"는 확정적 신호로 오인하지 않도록, 호출부는
+    이 함수의 반환값을 재시도 종료 조건으로만 쓰고 성공 여부 판정에는 쓰지 않는다."""
+    escaped_main = _escape_applescript_string(KAKAOTALK_MAIN_WINDOW_NAME)
+    script = f"""
+tell application "System Events"
+    tell process "{KAKAOTALK_PROCESS_NAME}"
+        set strayNames to {{}}
+        set winList to every window
+        repeat with w in winList
+            if name of w is not "{escaped_main}" then
+                set end of strayNames to (name of w)
+            end if
+        end repeat
+        return strayNames
+    end tell
+end tell
+"""
+    try:
+        result = run_applescript(script)
+    except Exception:
+        return []
+    return [name.strip() for name in result.split(", ") if name.strip()]
+
+
 def close_all_room_windows() -> None:
     """메인 목록 창("카카오톡")을 제외한 모든 창을 닫는다.
 
@@ -602,7 +661,16 @@ def close_all_room_windows() -> None:
     아니라 열려 있는 대화창을 대신 맞힐 수 있다 — 실제로 여러 방을 연속 처리하는
     시나리오(ai_news_telegram 연동)에서 이전 방 대화창의 메시지 입력창에 다음 방
     검색어가 잘못 입력되는 사고가 재현됐다. 방 하나를 처리할 때마다(성공하든
-    실패하든) 반드시 호출해 다음 방 처리 전에 메인 목록 창만 남긴다."""
+    실패하든) 반드시 호출해 다음 방 처리 전에 메인 목록 창만 남긴다.
+
+    2026-08-17 사고: 창을 닫는 AppleScript 호출 자체가 OSASCRIPT_TIMEOUT_SECONDS를
+    넘겨 강제 종료된 사례가 실제 운영(ai_news_telegram 연동, 긴 메시지로 카카오톡
+    UI가 느려진 상태)에서 확인됐다. 이때는 기존처럼 실패를 삼키고 넘어가면 창 닫기
+    반복문이 중간에 끊긴 채로 다음 방 처리를 시작하게 돼, 남은 창이 다음 방 검색
+    클릭을 엉뚱하게 맞히는 사고가 그대로 재현된다(8절). 이제 시도 후 실제로 남은
+    창이 있는지 확인해, 있으면 짧게 쉬었다가 재시도한다 — 재시도로도 못 끝내면
+    그 사실을 명확한 에러 로그로 남겨(조용히 다음 방으로 넘어가지 않음) 다음
+    방 실패의 원인을 바로 알 수 있게 한다."""
     escaped_main = _escape_applescript_string(KAKAOTALK_MAIN_WINDOW_NAME)
     script = f"""
 tell application "System Events"
@@ -618,10 +686,26 @@ tell application "System Events"
     end tell
 end tell
 """
-    try:
-        run_applescript(script)
-    except Exception:
-        logger.warning("방 창 정리 실패(다음 방 처리에 영향을 줄 수 있음)")
+    for attempt in range(1, CLOSE_WINDOWS_MAX_ATTEMPTS + 1):
+        try:
+            run_applescript(script)
+        except Exception:
+            logger.warning("방 창 정리 시도 %d/%d 실패", attempt, CLOSE_WINDOWS_MAX_ATTEMPTS)
+
+        stray = _list_stray_room_windows()
+        if not stray:
+            return
+
+        logger.warning(
+            "방 창 정리 후에도 남은 창 발견(시도 %d/%d): %s", attempt, CLOSE_WINDOWS_MAX_ATTEMPTS, stray
+        )
+        if attempt < CLOSE_WINDOWS_MAX_ATTEMPTS:
+            time.sleep(CLOSE_WINDOWS_RETRY_DELAY_SECONDS)
+
+    logger.error(
+        "방 창 정리 최종 실패 — 남은 창이 다음 방 처리에 영향을 줄 수 있습니다: %s",
+        _list_stray_room_windows(),
+    )
 
 
 def send_message_to_room(room_name: str, message: str) -> RoomSendResult:

@@ -1,6 +1,6 @@
 name: marathon_finder
-description: 한국(marathonmate.store)/중국 남경(Claude web_search)의 접수중인 5km 이상 도로 레이스를 찾아 DB에 저장하고 텔레그램으로 요약 발송
+description: 한국(marathonmate.store)/중국 남경(Claude web_search)의 접수중인 5km 이상 도로 레이스를 찾아 DB에 저장하고 텔레그램·카카오톡("러닝97" 방)으로 요약 발송
 entrypoint: src/main.py
-trigger_keywords: [마라톤, 러닝 대회, 남경 마라톤, 대회 일정, 접수중인 대회, 텔레그램 마라톤 알림]
+trigger_keywords: [마라톤, 러닝 대회, 남경 마라톤, 대회 일정, 접수중인 대회, 텔레그램 마라톤 알림, 러닝97, 카카오톡 마라톤 알림]
 requirements: requirements.txt
-version: 0.1.1
+version: 0.1.2

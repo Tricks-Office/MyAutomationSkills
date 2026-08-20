@@ -66,15 +66,26 @@ OSASCRIPT_TIMEOUT_SECONDS = 30
 CLICLICK_TIMEOUT_SECONDS = 10
 SEARCH_OPEN_DELAY_SECONDS = 0.5
 SEARCH_TYPE_DELAY_SECONDS = 0.8
-ROOM_OPEN_DELAY_SECONDS = 1.0
 PASTE_DELAY_SECONDS = 0.6
 SEND_VERIFY_POLL_INTERVAL_SECONDS = 0.5
-# 대화 내역에서 보낸 메시지를 찾는 AppleScript 호출(message_appears_in_history)은
-# 메시지가 길수록(예: 여러 항목을 담은 리포트) 문자열 비교에 걸리는 시간이 늘어나
-# OSASCRIPT_TIMEOUT_SECONDS에 가깝게 걸릴 수 있음이 실제 운영(ai_news_telegram 연동,
-# 약 2500자 리포트)에서 확인됐다. 짧게 잡으면 실제로는 전송에 성공했는데도 검증만
-# 시간 초과로 실패 처리되는 오탐이 발생해, 최소 한 번은 넉넉히 기다리도록 설정한다.
+# 2026-08-19/20 실사용(ai_news_telegram의 AI 뉴스 리포트, 수천 자)에서 대화 내역
+# 검증(message_appears_in_history)이 OSASCRIPT_TIMEOUT_SECONDS를 반복적으로 넘겨
+# 붙여넣기·전송까지는 이미 성공한 방까지 "실패"로 오판하는 사례가 확인됐다. 원인은
+# (1) 원문 전체(수천 자)를 문자열로 비교하고, (2) 대화 내역 전체 행을 순회하기
+# 때문 — 두 비용 모두 방금 보낸 메시지를 찾는 데는 불필요하게 크다. VERIFY_PREFIX_
+# LENGTH/VERIFY_RECENT_ROWS로 비교 대상을 줄인다(8절 참고). 카카오톡이 대화 내역의
+# 접근성 값을 일정 길이(약 493자 관측) 이상에서 말줄임(…)으로 자르는 것으로 보여,
+# 원문 전체와의 정확 일치는 애초에 성립하지 않을 수도 있었다 — 이 임계값보다 짧은
+# 앞부분만 비교하면 이 문제도 함께 피한다.
 SEND_VERIFY_TIMEOUT_SECONDS = 35
+VERIFY_PREFIX_LENGTH = 300
+VERIFY_RECENT_ROWS = 8
+# open_room_and_verify()가 더블클릭 직후 방 창이 뜨는지 확인하는 최대 대기 시간.
+# 이전에는 1초 대기 후 단 한 번만 확인해, 직전 방 처리로 시스템이 순간 바빴던 것
+# 으로 보이는 상황에서 실제로는 곧 열렸을 창까지 실패로 오판한 사례가 2026-08-20
+# 실사용에서 확인됐다(8절) — 폴링으로 바꿔 일시적 지연을 흡수한다.
+ROOM_OPEN_VERIFY_TIMEOUT_SECONDS = 3.0
+ROOM_OPEN_VERIFY_POLL_INTERVAL_SECONDS = 0.5
 APP_READY_TIMEOUT_SECONDS = 10
 APP_READY_POLL_INTERVAL_SECONDS = 0.5
 # close_all_room_windows()의 AppleScript 호출 자체가 OSASCRIPT_TIMEOUT_SECONDS를
@@ -476,17 +487,24 @@ end tell
 
 def open_room_and_verify(room_name: str, match: RoomMatch) -> bool:
     """cliclick 더블클릭으로 방을 연 뒤, 열린 창 이름이 정확히 일치하는지
-    재확인한다 (SRS FR-7 — misfire로 다른 실제 대화방이 열린 사례가 있어 필수)."""
+    재확인한다 (SRS FR-7 — misfire로 다른 실제 대화방이 열린 사례가 있어 필수).
+
+    2026-08-20: 더블클릭 후 1초만 기다리고 단 한 번만 확인했을 때, 직전 방 처리로
+    시스템이 순간 바빴던 것으로 보이는 상황에서 실제로는 곧 열렸을 창까지 실패로
+    오판한 사례가 확인됐다(8절) — 짧게 폴링해 일시적 지연을 흡수한다."""
     ensure_kakaotalk_frontmost()
     run_cliclick(f"dc:{match.center_x},{match.center_y}")
-    time.sleep(ROOM_OPEN_DELAY_SECONDS)
     script = f'tell application "System Events" to tell process "{KAKAOTALK_PROCESS_NAME}" to return name of every window'
-    window_names = run_applescript(script)
-    opened_names = [n.strip() for n in window_names.split(",")]
-    if room_name not in opened_names:
-        logger.error("방 열기 검증 실패: 예상=%s, 실제 열린 창=%s", room_name, opened_names)
-        return False
-    return True
+    deadline = time.monotonic() + ROOM_OPEN_VERIFY_TIMEOUT_SECONDS
+    opened_names: list[str] = []
+    while time.monotonic() < deadline:
+        time.sleep(ROOM_OPEN_VERIFY_POLL_INTERVAL_SECONDS)
+        window_names = run_applescript(script)
+        opened_names = [n.strip() for n in window_names.split(",")]
+        if room_name in opened_names:
+            return True
+    logger.error("방 열기 검증 실패: 예상=%s, 실제 열린 창=%s", room_name, opened_names)
+    return False
 
 
 def get_message_input_center(room_name: str) -> tuple[int, int]:
@@ -577,8 +595,17 @@ def click_send_button(send_center: tuple[int, int]) -> None:
 
 
 def message_appears_in_history(room_name: str, expected_text: str) -> bool:
+    """SRS FR-12: 대화 내역에서 방금 보낸 메시지를 찾는다.
+
+    2026-08-19/20 실사용에서 확인된 두 가지 이유로, 원문 전체와 전체 행 순회 대신
+    최근 몇 개 행에서 짧은 앞부분만 비교한다(VERIFY_PREFIX_LENGTH/VERIFY_RECENT_ROWS,
+    8절): (1) 방금 보낸 메시지는 항상 대화 내역 끝 근처에 있으므로 전체 행을 훑을
+    필요가 없고, (2) 카카오톡이 대화 내역 접근성 값을 일정 길이 이상에서 말줄임(…)
+    으로 자르는 것으로 보여 원문 전체와의 정확 일치는 애초에 성립하지 않을 수 있다."""
     escaped_name = _escape_applescript_string(room_name)
-    escaped_text = _escape_applescript_string(expected_text)
+    expected_prefix = expected_text[:VERIFY_PREFIX_LENGTH]
+    escaped_prefix = _escape_applescript_string(expected_prefix)
+    prefix_len = len(expected_prefix)
     script = f"""
 tell application "System Events"
     tell process "{KAKAOTALK_PROCESS_NAME}"
@@ -589,7 +616,11 @@ tell application "System Events"
             if role of e is "AXScrollArea" then
                 try
                     set tbl to (first UI element of e whose role is "AXTable")
-                    set rowList to rows of tbl
+                    set allRows to rows of tbl
+                    set rowCount to count of allRows
+                    set startIdx to rowCount - ({VERIFY_RECENT_ROWS} - 1)
+                    if startIdx < 1 then set startIdx to 1
+                    set rowList to items startIdx thru rowCount of allRows
                     repeat with r in rowList
                         set L1 to UI elements of r
                         repeat with a in L1
@@ -597,8 +628,11 @@ tell application "System Events"
                             repeat with b in L2
                                 if role of b is "AXTextArea" or role of b is "AXStaticText" then
                                     try
-                                        if (value of b as string) is "{escaped_text}" then
-                                            set found to "1"
+                                        set v to (value of b as string)
+                                        if (length of v) ≥ {prefix_len} then
+                                            if (text 1 thru {prefix_len} of v) is "{escaped_prefix}" then
+                                                set found to "1"
+                                            end if
                                         end if
                                     end try
                                 end if

@@ -251,6 +251,87 @@ def test_send_message_to_room_closes_windows_on_success() -> None:
     mock_close.assert_called_once()
 
 
+def test_message_appears_in_history_truncates_long_message_for_comparison() -> None:
+    """2026-08-19/20 사고: 원문 전체(수천 자)를 그대로 비교하면 접근성 트리 탐색이
+    느려 OSASCRIPT_TIMEOUT_SECONDS를 반복적으로 넘겼다. AppleScript에는 앞부분
+    (VERIFY_PREFIX_LENGTH)만 들어가야 한다."""
+    long_message = "가" * 1000
+    captured: dict = {}
+
+    def fake_run_applescript(script: str) -> str:
+        captured["script"] = script
+        return "1"
+
+    with patch("main.run_applescript", side_effect=fake_run_applescript):
+        assert main.message_appears_in_history("방A", long_message) is True
+
+    script = captured["script"]
+    assert ("가" * main.VERIFY_PREFIX_LENGTH) in script
+    assert long_message not in script
+
+
+def test_message_appears_in_history_uses_full_text_when_shorter_than_prefix() -> None:
+    captured: dict = {}
+
+    def fake_run_applescript(script: str) -> str:
+        captured["script"] = script
+        return "0"
+
+    with patch("main.run_applescript", side_effect=fake_run_applescript):
+        assert main.message_appears_in_history("방A", "안녕") is False
+
+    assert "안녕" in captured["script"]
+
+
+def test_message_appears_in_history_limits_to_recent_rows() -> None:
+    captured: dict = {}
+
+    def fake_run_applescript(script: str) -> str:
+        captured["script"] = script
+        return "0"
+
+    with patch("main.run_applescript", side_effect=fake_run_applescript):
+        main.message_appears_in_history("방A", "안녕")
+
+    assert f"rowCount - ({main.VERIFY_RECENT_ROWS} - 1)" in captured["script"]
+
+
+def test_open_room_and_verify_succeeds_on_first_poll() -> None:
+    match = main.RoomMatch(center_x=10, center_y=20)
+    with patch("main.ensure_kakaotalk_frontmost"), patch(
+        "main.run_cliclick"
+    ) as mock_cliclick, patch(
+        "main.run_applescript", return_value="카카오톡, 방A"
+    ), patch("main.ROOM_OPEN_VERIFY_TIMEOUT_SECONDS", 0.2), patch(
+        "main.ROOM_OPEN_VERIFY_POLL_INTERVAL_SECONDS", 0.02
+    ):
+        assert main.open_room_and_verify("방A", match) is True
+    mock_cliclick.assert_called_once_with("dc:10,20")
+
+
+def test_open_room_and_verify_retries_until_room_appears() -> None:
+    """2026-08-20 사고 재현: 더블클릭 직후 곧바로 확인하면 아직 안 열려 있을 수
+    있다 — 짧게 폴링해 일시적 지연을 흡수해야 한다."""
+    match = main.RoomMatch(center_x=10, center_y=20)
+    responses = iter(["카카오톡", "카카오톡", "카카오톡, 방A"])
+    with patch("main.ensure_kakaotalk_frontmost"), patch("main.run_cliclick"), patch(
+        "main.run_applescript", side_effect=lambda *a, **kw: next(responses)
+    ), patch("main.ROOM_OPEN_VERIFY_TIMEOUT_SECONDS", 1.0), patch(
+        "main.ROOM_OPEN_VERIFY_POLL_INTERVAL_SECONDS", 0.01
+    ):
+        assert main.open_room_and_verify("방A", match) is True
+
+
+def test_open_room_and_verify_fails_after_timeout() -> None:
+    match = main.RoomMatch(center_x=10, center_y=20)
+    with patch("main.ensure_kakaotalk_frontmost"), patch("main.run_cliclick"), patch(
+        "main.run_applescript", return_value="카카오톡"
+    ), patch("main.ROOM_OPEN_VERIFY_TIMEOUT_SECONDS", 0.1), patch(
+        "main.ROOM_OPEN_VERIFY_POLL_INTERVAL_SECONDS", 0.03
+    ):
+        assert main.open_room_and_verify("방A", match) is False
+
+
 def test_is_accessibility_denied_matches_known_markers() -> None:
     assert main._is_accessibility_denied("osascript에 보조 접근이 허용되지 않습니다.")
     assert main._is_accessibility_denied("Not allowed to send Apple events")

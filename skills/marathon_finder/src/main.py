@@ -11,7 +11,9 @@ import logging
 import os
 import re
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,6 +27,13 @@ from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DB_PATH = REPO_ROOT / "data" / "marathon.db"
+
+# 텔레그램 발송과 동일한 메시지를 보조 채널로 카카오톡에도 보낸다(ai_news_telegram의
+# 기존 패턴, SRS FR-14/FR-15와 동일). CLAUDE.md 3.3(스킬 격리)에 따라 kakaotalk_sender의
+# 코드를 직접 import하지 않고 서브프로세스로 호출한다.
+KAKAOTALK_SENDER_SCRIPT = REPO_ROOT / "skills" / "kakaotalk_sender" / "src" / "main.py"
+KAKAOTALK_ROOMS = ["러닝97"]
+KAKAOTALK_SEND_TIMEOUT_SECONDS = 180
 
 KOREA_SCHEDULE_URL = "https://marathonmate.store/marathon-schedule"
 MIN_DISTANCE_KM = 5.0
@@ -447,6 +456,48 @@ def send_telegram_message(bot_token: str, chat_id: str, text: str) -> None:
             raise RuntimeError(f"텔레그램 발송 실패: {payload}")
 
 
+def send_kakaotalk_notification(message: str, rooms: list[str] = KAKAOTALK_ROOMS) -> bool:
+    """ai_news_telegram의 동일 함수(SRS FR-14/FR-15)와 같은 패턴: kakaotalk_sender를
+    서브프로세스로 호출해 텔레그램과 같은 메시지를 보조 채널(카카오톡)에도 보낸다.
+    macOS UI 자동화 기반이라 텔레그램 API 호출보다 구조적으로 실패 가능성이 높다고
+    보고, 이 함수는 예외를 절대 밖으로 내보내지 않는다 — 실패해도 이미 완료된 텔레그램
+    발송/DB 반영에는 영향을 주지 않는 best-effort로 설계했다."""
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as tmp_file:
+            tmp_file.write(message)
+            tmp_path = tmp_file.name
+
+        args = [sys.executable, str(KAKAOTALK_SENDER_SCRIPT)]
+        for room in rooms:
+            args += ["--room", room]
+        args += ["--message-file", tmp_path]
+
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=KAKAOTALK_SEND_TIMEOUT_SECONDS,
+        )
+        if result.returncode != 0:
+            logger.error(
+                "카카오톡 발송 실패(exit=%d), 텔레그램 발송/DB 반영에는 영향 없음: %s",
+                result.returncode,
+                result.stderr.strip(),
+            )
+            return False
+        logger.info("카카오톡 발송 성공: %s", ", ".join(rooms))
+        return True
+    except Exception:
+        logger.exception("카카오톡 발송 단계에서 예외 발생, 텔레그램 발송/DB 반영에는 영향 없음")
+        return False
+    finally:
+        if tmp_path is not None:
+            Path(tmp_path).unlink(missing_ok=True)
+
+
 def run(db_path: Path = DEFAULT_DB_PATH) -> int:
     """SRS 6절 처리 흐름을 오케스트레이션한다. 성공 시 0, 완전 실패 시 0이 아닌 값을 반환한다."""
     try:
@@ -484,6 +535,8 @@ def run(db_path: Path = DEFAULT_DB_PATH) -> int:
     except Exception:
         logger.exception("텔레그램 발송 실패")
         return 1
+
+    send_kakaotalk_notification(message)  # best-effort, 실패해도 종료 코드에 영향 없음
 
     logger.info("실행 완료: 발송 대상 %d건", len(notifiable))
     return 0

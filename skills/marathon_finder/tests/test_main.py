@@ -111,6 +111,7 @@ def test_run_returns_success_with_mocked_sources(monkeypatch, tmp_path):
 
     race = _make_race("모킹 테스트 마라톤")
     sent = {}
+    kakao_sent = {}
 
     monkeypatch.setattr(main, "fetch_korea_races", lambda: [race])
     monkeypatch.setattr(main, "fetch_china_races", lambda api_key: [])
@@ -119,12 +120,21 @@ def test_run_returns_success_with_mocked_sources(monkeypatch, tmp_path):
         "send_telegram_message",
         lambda token, chat_id, text: sent.update(token=token, chat_id=chat_id, text=text),
     )
+    # 카카오톡 발송은 실제 subprocess/macOS 자동화를 부르므로 run() 테스트에서는 항상
+    # stub 처리한다(ai_news_telegram의 기존 테스트 패턴과 동일). 카카오톡 발송 자체를
+    # 검증하는 테스트는 send_kakaotalk_notification을 직접 호출해 별도로 확인한다.
+    monkeypatch.setattr(
+        main,
+        "send_kakaotalk_notification",
+        lambda message, rooms=main.KAKAOTALK_ROOMS: kakao_sent.update(message=message) or True,
+    )
 
     db_path = tmp_path / "marathon.db"
     exit_code = main.run(db_path=db_path)
 
     assert exit_code == 0
     assert sent["text"] and race.race_name in sent["text"]
+    assert kakao_sent["message"] == sent["text"]
 
 
 def test_run_returns_failure_when_both_sources_fail(monkeypatch, tmp_path):
@@ -229,3 +239,57 @@ def test_fetch_korea_schedule_html_does_not_retry_on_client_error(monkeypatch):
         pass
 
     assert calls["count"] == 1
+
+
+class _FakeCompletedProcess:
+    def __init__(self, returncode: int, stderr: str = ""):
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+def test_send_kakaotalk_notification_returns_true_on_success(monkeypatch):
+    captured = {}
+
+    def _fake_run(args, capture_output, text, timeout):
+        captured["args"] = args
+        return _FakeCompletedProcess(returncode=0)
+
+    monkeypatch.setattr(main.subprocess, "run", _fake_run)
+
+    assert main.send_kakaotalk_notification("접수중인 대회 1건") is True
+    assert str(main.KAKAOTALK_SENDER_SCRIPT) in captured["args"]
+    for room in main.KAKAOTALK_ROOMS:
+        assert room in captured["args"]
+    assert "--message-file" in captured["args"]
+
+
+def test_send_kakaotalk_notification_returns_false_on_nonzero_exit(monkeypatch):
+    monkeypatch.setattr(
+        main.subprocess, "run", lambda *a, **kw: _FakeCompletedProcess(returncode=1, stderr="방 없음")
+    )
+    assert main.send_kakaotalk_notification("접수중인 대회 1건") is False
+
+
+def test_send_kakaotalk_notification_returns_false_and_does_not_raise_on_exception(monkeypatch):
+    def _raise(*args, **kwargs):
+        raise RuntimeError("subprocess 실행 실패")
+
+    monkeypatch.setattr(main.subprocess, "run", _raise)
+    assert main.send_kakaotalk_notification("접수중인 대회 1건") is False
+
+
+def test_send_kakaotalk_notification_writes_message_to_temp_file(monkeypatch):
+    written = {}
+
+    def _fake_run(args, capture_output, text, timeout):
+        idx = args.index("--message-file")
+        written["content"] = Path(args[idx + 1]).read_text(encoding="utf-8")
+        written["path"] = args[idx + 1]
+        return _FakeCompletedProcess(returncode=0)
+
+    monkeypatch.setattr(main.subprocess, "run", _fake_run)
+
+    main.send_kakaotalk_notification("멀티라인\n메시지 테스트")
+
+    assert written["content"] == "멀티라인\n메시지 테스트"
+    assert not Path(written["path"]).exists()  # finally 블록에서 삭제됨
